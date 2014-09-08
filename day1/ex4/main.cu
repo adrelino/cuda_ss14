@@ -80,6 +80,7 @@ int main(int argc, char **argv)
     // We will do it right here, so that the run time measurements are accurate
     cudaDeviceSynchronize();  CUDA_CHECK;
 
+
     // Reading command line parameters:
     // getParam("param", var, argc, argv) looks whether "-param xyz" is specified, and if so stores the value "xyz" in "var"
     // If "-param" is not specified, the value of "var" remains unchanged
@@ -140,7 +141,7 @@ int main(int argc, char **argv)
     size_t w = static_cast<size_t>(mIn.cols);         // width
     size_t h = static_cast<size_t>(mIn.rows);         // height
     size_t nc = static_cast<size_t>(mIn.channels());  // number of channels
-    cout << "image: " << w << " x " << h << endl;
+    cout << "image: " << w << " x: " << h << endl;
     
     // Set the output image format
     // ###
