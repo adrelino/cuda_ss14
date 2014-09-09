@@ -1,7 +1,7 @@
-all: ex3 ex4 ex5
+all: ex3 ex4 ex5 ex6 ex7_bonus
 
-#ex2: ex2 nvcc -o squareArray ex2/squareArray.cu
-#	 nvcc -o addArrays ex2/addArrays.cu
+ex2: nvcc -o squareArray ex2/squareArray.cu
+	 nvcc -o addArrays ex2/addArrays.cu
 
 ex3: ex3/main.cu aux.cu aux.h Makefile
 	nvcc -o ex3/main ex3/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
@@ -17,3 +17,6 @@ ex6: ex6/main.cu aux.cu aux.h Makefile
 
 ex7: ex7/main.cu aux.cu aux.h Makefile
 	nvcc -o ex7/main ex7/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
+
+ex7_bonus: ex7_bonus/main.cu aux.cu aux.h Makefile
+		nvcc -o ex7_bonus/main ex7_bonus/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core -lcublas
