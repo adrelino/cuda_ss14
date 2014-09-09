@@ -20,3 +20,6 @@ ex7: ex7/main.cu aux.cu aux.h Makefile
 
 ex7_bonus: ex7_bonus/main.cu aux.cu aux.h Makefile
 		nvcc -o ex7_bonus/main ex7_bonus/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core -lcublas
+
+ex8: ex8/main.cu aux.cu aux.h Makefile
+	nvcc -o ex8/main ex8/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
