@@ -10,6 +10,9 @@
 // ### Maria Klodt, Jan Stuehmer, Mohamed Souiai, Thomas Moellenhoff
 // ###
 // ###
+// ### Dennis Mack, dennis.mack@tum.de, p060
+// ### Adrian Haarbach, haarbach@in.tum.de, p077
+// ### Markus Schlaffer, , p070
 
 #include <cuda_runtime.h>
 #include <iostream>

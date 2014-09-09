@@ -17,7 +17,8 @@
 // ###
 // ### name, email, login username (for example p123)
 // ### Dennis Mack, dennis.mack@tum.de, p060
-// ###
+// ### Adrian Haarbach, haarbach@in.tum.de, p077
+// ### Markus Schlaffer, , p070
 
 
 #include "aux.h"
