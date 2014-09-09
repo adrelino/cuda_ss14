@@ -11,3 +11,6 @@ ex4: ex4/main.cu aux.cu aux.h Makefile
 
 ex5: ex5/main.cu aux.cu aux.h Makefile
 	nvcc -o ex5/main ex5/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
+
+ex6: ex6/main.cu aux.cu aux.h Makefile
+	nvcc -o ex6/main ex6/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
