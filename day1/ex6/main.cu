@@ -78,98 +78,70 @@ cv::Mat convolution(cv::Mat k, cv::Mat u){
     int rx=wk/2;
     int ry=hk/2;
 
-    cv::Mat newMatMultiChannel(h,w,u.type());
+    int nc = u.channels();
 
-    std::vector<cv::Mat> channelsIn, channelsOut;
+    if(u.type()==CV_32FC1){
 
-    cv::split(u,channelsIn);
+    }else if(u.type()==CV_32FC3){
 
-    for (int c=0; c<channelsIn.size(); c++)
-    {
-        cv::Mat u2=channelsIn[c];
-        cv::Mat newMat(h,w,CV_32FC1);
-
-        for (int x = rx; x < (w-rx); ++x)
-        {
-            for (int y = ry; y < (h-ry); ++y)
-            {
-                float newval=0;
-                for (int i = 0; i < wk; ++i)
-                {
-                    for (int j = 0; j < hk; ++j)
-                    {
-                        newval+=k.at<float>(j,i)*u2.at<float>(y-j,x-i);
-                    }
-                }
-                newMat.at<float>(y,x)=newval;
-            }
-        }
-        //return newMat;
-        channelsOut.push_back(newMat);
+    }else{
+        std::cout<<"unsupported matrix type"<<std::endl;
+        return u;
     }
-    cv::merge(channelsOut,newMatMultiChannel);
-    return newMatMultiChannel;
+
+    cv::Mat newMat(h,w,u.type());
+
+    for (int x = rx; x < (w-rx); ++x)
+    {
+        for (int y = ry; y < (h-ry); ++y)
+        {
+            float newval=0;
+            cv::Vec3f newvalVec(0,0,0);
+            for (int i = 0; i < wk; ++i)
+            {
+                for (int j = 0; j < hk; ++j)
+                {
+                    if(nc==1) newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
+                    else newvalVec+=k.at<float>(j,i)*u.at<cv::Vec3f>(y-j,x-i);
+
+                }
+            }
+            if(nc==1) newMat.at<float>(y,x)=newval;
+            else newMat.at<cv::Vec3f>(y,x)=newvalVec;
+
+        }
+    }
+    
+    return newMat;
 }
 
 //                       in             out      out
-__global__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int wk, int hk){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>w || y>h) return; //check for blocks
 
-    int xPlus = x + 1;
-    if(xPlus>=w) xPlus=w-1;
+    int rx=wk/2;
+    int ry=hk/2;
 
-    int yPlus = y + 1;
-    if(yPlus>=h) yPlus=h-1;
 
     for (int i = 0; i < nc; ++i)
     {
-        v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-        v2[x+ y*w +i*w*h]=imgIn[x+ yPlus*w + i*w*h]-imgIn[x+ y*w + i*w*h];
+
+        float newval=0;
+        for (int i = 0; i < wk; ++i)
+        {
+            for (int j = 0; j < hk; ++j)
+            {
+                newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
+
+            }
+        }
+
+        //v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
 
     }
-}
-
-//                         in        in         out
-__global__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    int xMinus = x - 1;
-    if(xMinus<0) xMinus=0;
-
-    int yMinus = y - 1;
-    if(yMinus<0) yMinus=0;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        float backv1_x=v1[x+ y*w +i*w*h]-v1[xMinus+ y*w + i*w*h];
-        float backv2_y=v2[x+ y*w + i*w*h]-v2[x+ yMinus*w + i*w*h];
-        imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
-    }
-}
-
-//                     in           out
-__global__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    float c=0;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        c+=powf(imgIn[x+ y*w +i*w*h],2);
-    }
-
-    c=sqrtf(c);
-
-    imgOut[x+ y*w]=c; //channel is 0 -> grayscale
 }
 
 int main(int argc, char **argv)
@@ -255,14 +227,6 @@ int main(int argc, char **argv)
     // ###
     // ###
     cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
-    cv::Mat mOut2(h,w,mIn.type()); 
-    cv::Mat mOut3(h,w,mIn.type()); 
-
-    //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
-    cv::Mat mOut4(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
-    // ### Define your own output images here as needed
-
-
 
 
 
@@ -275,14 +239,13 @@ int main(int argc, char **argv)
     // allocate raw input image array
     size_t n = (size_t)w*h*nc;
     float *imgIn  = new float[n];
-
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
     float *imgOut = new float[n];
-    float *imgOut2 = new float[n];
-    float *imgDivergence = new float[n];
 
-    size_t n_OneChannel = (size_t)w*h*1;
-    float *imgLaplacian = new float[n_OneChannel]; //only one channel
+    size_t n1 = (size_t)w*h*1;
+    float *imgKernel  = new float[n1];
+
+
 
 
 
@@ -327,61 +290,38 @@ int main(int argc, char **argv)
     // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
     // But for CUDA it's better to work with layered images: rrr... ggg... bbb...
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
-    /*convert_mat_to_layered (imgIn, mIn);
+    convert_mat_to_layered(imgIn, mIn);
+    convert_mat_to_layered(imgKernel,k);
 
 	//GPU:
-	
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_laplacian;
 
+    int wk=k.cols;
+    int hk=k.rows;
+	
+	float *d_imgIn, *d_imgKernel, *d_imgOut;
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-
-    cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
-	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
-    cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
-
-    cudaMalloc(&d_laplacian, n_OneChannel * sizeof(float)); CUDA_CHECK; //notice: only one channel
-
+    cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
 
 	dim3 block = dim3(32,8,1);
 	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
 	
-    gradient <<<grid,block>>> (d_imgIn, d_v1, d_v2, w, h, nc);CUDA_CHECK;
+    convolutionGPU <<<grid,block>>> (d_imgIn, d_imgKernel, d_imgOut, w, h, nc, wk, hk);CUDA_CHECK;
 	cudaDeviceSynchronize();CUDA_CHECK;
-    divergence<<<grid,block>>> (d_v1, d_v2, d_divergence, w, h, nc);CUDA_CHECK;
-    cudaDeviceSynchronize();CUDA_CHECK;
-    l2norm<<<grid,block>>> (d_divergence, d_laplacian, w, h, nc);CUDA_CHECK;
-    cudaDeviceSynchronize();CUDA_CHECK;
 
 
-	cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgOut2, d_v2, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgDivergence, d_divergence, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgLaplacian, d_laplacian, n_OneChannel * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+	cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
 
-	cudaFree(d_v1);CUDA_CHECK;
-    cudaFree(d_v2);CUDA_CHECK;
-    cudaFree(d_divergence);CUDA_CHECK;
 	cudaFree(d_imgIn);CUDA_CHECK;
-    cudaFree(d_laplacian);CUDA_CHECK;
-*/
+    cudaFree(d_imgOut);CUDA_CHECK;
 
-
-
-
-/*
-    convert_layered_to_mat(mOut2, imgOut2);
-    showImage("Gradient_Y", mOut2, 100+2*w+40, 100);
-
-    convert_layered_to_mat(mOut3, imgDivergence);
-    showImage("Divergence", mOut3, 100+3*w+40, 100);
-
-    convert_layered_to_mat(mOut4, imgLaplacian);
-    showImage("Laplacian", mOut4, 100+4*w+40, 100);
-    */
-
+    convert_layered_to_mat(mOut, imgOut);
+    showImage("Convolution GPU", mOut, 100+2*w+40, 100);
+    
     // ### Display your own output images here as needed
 
 #ifdef CAMERA
@@ -392,19 +332,13 @@ int main(int argc, char **argv)
     cv::waitKey(0);
 #endif
 
-
-
-/*
     // save input and result
-    cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
-    cv::imwrite("image_result.png",mOut*255.f);
+    //cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
+    //cv::imwrite("image_result.png",mOut*255.f);
 
     // free allocated arrays
     delete[] imgIn;
     delete[] imgOut;
-    delete[] imgDivergence;
-    delete[] imgOut2;
-    */
 
     // close all opencv windows
     cvDestroyAllWindows();
