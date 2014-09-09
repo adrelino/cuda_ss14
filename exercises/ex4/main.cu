@@ -31,7 +31,7 @@ __device__ void img_thresholding(float *d_imgIn, float *d_imgOut, size_t w, size
 
   if (pxid < nr_pixels) {
     float val = d_imgIn[pxid] / nc;
-      
+
     if (val >= thresh) {
       // red channel
       d_imgOut[pxid + (0 * nr_pixels)] = 1.0f;
@@ -67,6 +67,14 @@ __global__ void kernel_call(float *d_imgIn, float *d_imgOut, size_t w, size_t h,
 
   // do the thresholding
   img_thresholding(d_imgIn, d_imgOut, w, h, nc, thresh);
+}
+
+__host__ float calc_average_time(float *arr, int n) {
+  float cum_sum = 0.0f;
+  for (int i = 0; i < n; ++i)
+    cum_sum += arr[i];
+
+  return cum_sum / n;
 }
 
 int main(int argc, char **argv)
@@ -186,52 +194,71 @@ int main(int argc, char **argv)
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered (imgIn, mIn);
 
-    Timer timer; timer.start();
-    // ###
-    // ###
-    // ### Main computation
-    // ###
-    // ###
-    // create array for cuda
-    float *d_imgIn, *d_imgOut;
-
-    size_t nr_bytes_input_image = size_input_image * sizeof(float);
-    cudaMalloc(&d_imgIn, nr_bytes_input_image);
-    CUDA_CHECK;
-
-    size_t nr_bytes_output_image = size_output_image * sizeof(float);
-    cudaMalloc(&d_imgOut, nr_bytes_output_image);
-    CUDA_CHECK;
-
-    cudaMemset(d_imgOut, 0, nr_bytes_output_image);
-    CUDA_CHECK;
-
-    // copy layered images to device
-    cudaMemcpy(d_imgIn, imgIn, nr_bytes_input_image, cudaMemcpyHostToDevice);
-    CUDA_CHECK;
-
-    size_t nr_pixels = (size_t)w * h;
-    cout << "Number of pixels: " << nr_pixels << endl;
-
-    // compute the appropiate dimensions for the grid/block
-    dim3 block_size = dim3(128, 1, 1);
-    dim3 grid_size = dim3((nr_pixels + block_size.x - 1) / block_size.x, 1, 1);
+    float *time_with_memory_calls = new float[repeats];
+    float *time_gpu_only = new float[repeats];    
     
-    kernel_call<<<grid_size, block_size>>>(d_imgIn, d_imgOut, w, h, nc, thresh);
+    for (int i=0; i < repeats; ++i) {
+      Timer timer_memory_calls, timer_gpu_only;
+      timer_memory_calls.start();
+      
+      // ###
+      // ###
+      // ### Main computation
+      // ###
+      // ###
+      // create array for cuda
+      float *d_imgIn, *d_imgOut;
 
-    // copy back from cuda memory
-    cudaMemcpy(imgOut, d_imgOut, nr_bytes_output_image, cudaMemcpyDeviceToHost);
-    CUDA_CHECK;
+      size_t nr_bytes_input_image = size_input_image * sizeof(float);
+      cudaMalloc(&d_imgIn, nr_bytes_input_image);
+      CUDA_CHECK;
 
-    // cudaFree
-    cudaFree(d_imgIn);
-    CUDA_CHECK;
+      size_t nr_bytes_output_image = size_output_image * sizeof(float);
+      cudaMalloc(&d_imgOut, nr_bytes_output_image);
+      CUDA_CHECK;
 
-    cudaFree(d_imgOut);
-    CUDA_CHECK;
+      cudaMemset(d_imgOut, 0, nr_bytes_output_image);
+      CUDA_CHECK;
 
-    timer.end();  float t = timer.get();  // elapsed time in seconds
-    cout << "time: " << t*1000 << " ms" << endl;
+      // copy layered images to device
+      cudaMemcpy(d_imgIn, imgIn, nr_bytes_input_image, cudaMemcpyHostToDevice);
+      CUDA_CHECK;
+
+      timer_gpu_only.start();
+      size_t nr_pixels = (size_t)w * h;
+
+      // compute the appropiate dimensions for the grid/block
+      dim3 block_size = dim3(128, 1, 1);
+      dim3 grid_size = dim3((nr_pixels + block_size.x - 1) / block_size.x, 1, 1);
+    
+      kernel_call<<<grid_size, block_size>>>(d_imgIn, d_imgOut, w, h, nc, thresh);
+      CUDA_CHECK;
+      cudaDeviceSynchronize();
+
+      timer_gpu_only.end();
+      // save time in seconds
+      time_gpu_only[i] = timer_gpu_only.get();
+      
+      // copy back from cuda memory
+      cudaMemcpy(imgOut, d_imgOut, nr_bytes_output_image, cudaMemcpyDeviceToHost);
+      CUDA_CHECK;
+
+      // cudaFree
+      cudaFree(d_imgIn);
+      CUDA_CHECK;
+
+      cudaFree(d_imgOut);
+      CUDA_CHECK;
+
+      timer_memory_calls.end();
+      time_with_memory_calls[i] = timer_memory_calls.get();  // elapsed time in seconds
+    }
+
+    cout << "avg time gpu: " << calc_average_time(time_with_memory_calls, repeats)*1000 << " ms" << endl;
+    cout << "avg time gpu alloc free: " << calc_average_time(time_gpu_only, repeats)*1000 << " ms" << endl;
+
+    delete[] time_with_memory_calls;
+    delete[] time_gpu_only;
 
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
