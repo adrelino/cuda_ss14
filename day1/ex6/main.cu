@@ -68,10 +68,11 @@ void imagesc(std::string name, cv::Mat mat){
 
 //ex3
 cv::Mat convolution(cv::Mat k, cv::Mat u){
-
+  // width and height image
     int w=u.cols;
     int h=u.rows;
 
+    // width and height kernel
     int wk=k.cols;
     int hk=k.rows;
 
@@ -89,30 +90,45 @@ cv::Mat convolution(cv::Mat k, cv::Mat u){
         return u;
     }
 
-    cv::Mat newMat(h,w,u.type());
+    cv::Mat out(h,w,u.type());
 
-    for (int x = rx; x < (w-rx); ++x)
-    {
-        for (int y = ry; y < (h-ry); ++y)
-        {
-            float newval=0;
-            cv::Vec3f newvalVec(0,0,0);
-            for (int i = 0; i < wk; ++i)
-            {
-                for (int j = 0; j < hk; ++j)
-                {
-                    if(nc==1) newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
-                    else newvalVec+=k.at<float>(j,i)*u.at<cv::Vec3f>(y-j,x-i);
+    // loop over all pixels
+    for (int x = 0; x < w; ++x)
+      {
+    for (int y = 0; y < h; ++y)
+      {
+        float val=0;
+        cv::Vec3f valVec(0,0,0);
 
-                }
-            }
-            if(nc==1) newMat.at<float>(y,x)=newval;
-            else newMat.at<cv::Vec3f>(y,x)=newvalVec;
 
-        }
-    }
-    
-    return newMat;
+        // do convolution for every pixel
+        for (int i = 0; i < wk; ++i)
+          {
+        for (int j = 0; j < hk; ++j)
+          {
+            int y_index = y-j+ry;
+            int x_index = x-i+rx;
+
+            // check indices - do clamping if necessary
+            if (y_index < 0)
+              y_index = 0;
+            else if(y_index >= h)
+              y_index = h-1;
+
+            if (x_index < 0)
+              x_index = 0;
+            else if (x_index >= w)
+              x_index = w-1;
+
+            if(nc==1) val+=k.at<float>(j,i)*u.at<float>(y_index,x_index);
+            else valVec+=k.at<float>(j,i)*u.at<cv::Vec3f>(y_index,x_index);                     
+          }
+          }
+        if(nc==1) out.at<float>(y,x)=val;
+        else out.at<cv::Vec3f>(y,x)=valVec;
+      }
+      }
+    return out;
 }
 
 //                       in             out      out
@@ -122,8 +138,8 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w
 
     if(x>w || y>h) return; //check for blocks
 
-    int rx=wk/2;
-    int ry=hk/2;
+    //int rx=wk/2;
+    //int ry=hk/2;
 
 
     for (int i = 0; i < nc; ++i)
@@ -134,7 +150,7 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w
         {
             for (int j = 0; j < hk; ++j)
             {
-                newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
+                //newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
 
             }
         }
@@ -267,8 +283,8 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-
-    cv::Mat k=kernel(3);
+    float sigma = 4.0f;
+    cv::Mat k=kernel(sigma);
     
     imagesc("Kernel", k);
 
