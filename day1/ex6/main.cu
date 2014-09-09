@@ -68,108 +68,52 @@ void imagesc(std::string name, cv::Mat mat){
 
 //ex3
 cv::Mat convolution(cv::Mat k, cv::Mat u){
-
+  // width and height image
     int w=u.cols;
     int h=u.rows;
 
+    // width and height kernel
     int wk=k.cols;
     int hk=k.rows;
 
     int rx=wk/2;
     int ry=hk/2;
 
-    cv::Mat newMatMultiChannel(h,w,u.type());
+    cv::Mat out(h,w,u.type());
 
-    std::vector<cv::Mat> channelsIn, channelsOut;
+    // loop over all pixels
+    for (int x = 0; x < w; ++x)
+      {
+	for (int y = 0; y < h; ++y)
+	  {
+	    float val=0;
 
-    cv::split(u,channelsIn);
+	    // do convolution for every pixel
+	    for (int i = 0; i < wk; ++i)
+	      {
+		for (int j = 0; j < hk; ++j)
+		  {
+		    int y_index = y-j+ry;
+		    int x_index = x-i+rx;
 
-    for (int c=0; c<channelsIn.size(); c++)
-    {
-        cv::Mat u2=channelsIn[c];
-        cv::Mat newMat(h,w,CV_32FC1);
+		    // check indices - do clamping if necessary
+		    if (y_index < 0)
+		      y_index = 0;
+		    else if(y_index >= h)
+		      y_index = h-1;
 
-        for (int x = rx; x < (w-rx); ++x)
-        {
-            for (int y = ry; y < (h-ry); ++y)
-            {
-                float newval=0;
-                for (int i = 0; i < wk; ++i)
-                {
-                    for (int j = 0; j < hk; ++j)
-                    {
-                        newval+=k.at<float>(j,i)*u2.at<float>(y-j,x-i);
-                    }
-                }
-                newMat.at<float>(y,x)=newval;
-            }
-        }
-        //return newMat;
-        channelsOut.push_back(newMat);
-    }
-    cv::merge(channelsOut,newMatMultiChannel);
-    return newMatMultiChannel;
-}
+		    if (x_index < 0)
+		      x_index = 0;
+		    else if (x_index >= w)
+		      x_index = w-1;
 
-//                       in             out      out
-__global__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    int xPlus = x + 1;
-    if(xPlus>=w) xPlus=w-1;
-
-    int yPlus = y + 1;
-    if(yPlus>=h) yPlus=h-1;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-        v2[x+ y*w +i*w*h]=imgIn[x+ yPlus*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-
-    }
-}
-
-//                         in        in         out
-__global__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    int xMinus = x - 1;
-    if(xMinus<0) xMinus=0;
-
-    int yMinus = y - 1;
-    if(yMinus<0) yMinus=0;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        float backv1_x=v1[x+ y*w +i*w*h]-v1[xMinus+ y*w + i*w*h];
-        float backv2_y=v2[x+ y*w + i*w*h]-v2[x+ yMinus*w + i*w*h];
-        imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
-    }
-}
-
-//                     in           out
-__global__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    float c=0;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        c+=powf(imgIn[x+ y*w +i*w*h],2);
-    }
-
-    c=sqrtf(c);
-
-    imgOut[x+ y*w]=c; //channel is 0 -> grayscale
+		    val+=k.at<float>(j,i)*u.at<float>(y_index,x_index);			    		
+		  }
+	      }
+	    out.at<float>(y,x)=val;
+	  }
+      }
+    return out;
 }
 
 int main(int argc, char **argv)
@@ -304,8 +248,8 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-
-    cv::Mat k=kernel(3);
+    float sigma = 4.0f;
+    cv::Mat k=kernel(sigma);
     
     imagesc("Kernel", k);
 
