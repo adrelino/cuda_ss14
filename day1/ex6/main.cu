@@ -132,31 +132,34 @@ cv::Mat convolution(cv::Mat k, cv::Mat u){
 }
 
 //                       in             out      out
-__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int wk, int hk){
+__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int wk, int hk){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = wk;//==hk
 
-    if(x>w || y>h) return; //check for blocks
-
-    //int rx=wk/2;
-    //int ry=hk/2;
+    int rx=wk/2;
+    int ry=hk/2;
 
 
-    for (int i = 0; i < nc; ++i)
-    {
+    if(x>=w || y>=h) return; //check for blocks
 
-        float newval=0;
-        for (int i = 0; i < wk; ++i)
-        {
-            for (int j = 0; j < hk; ++j)
-            {
-                //newval+=k.at<float>(j,i)*u.at<float>(y-j,x-i);
-
+    for(unsigned int c=0;c<nc;c++) {
+        float sum=0;
+        for(unsigned int i=0;i<k;i++){
+            unsigned int x_new;
+            if(x+rx<i) x_new=rx;
+            else if(x+rx-i>=w) x_new=w+rx-1;
+            else x_new=x+rx-i;
+            for(unsigned int j=0;j<k;j++){
+                unsigned int y_new;
+                if(y+ry<j) y_new=0;
+                else if(y+ry-j>=h) y_new=h+ry-1;
+                else y_new=y+ry-j;
+                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
+                // if(sum<0) cout << "fuck" << endl;
             }
         }
-
-        //v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-
+        imgOut[x+w*y+w*h*c]=sum;
     }
 }
 
@@ -197,7 +200,10 @@ int main(int argc, char **argv)
 
     // ### Define your own parameters here as needed    
 
-
+    float sigma=3.0f;
+    getParam("sigma", sigma, argc, argv);
+    if(sigma<=0) sigma=3.0f;
+    cout << "sigma: " << sigma << endl;
 
 
     // Init camera / Load input image
@@ -283,7 +289,6 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-    float sigma = 4.0f;
     cv::Mat k=kernel(sigma);
     
     imagesc("Kernel", k);
@@ -295,12 +300,7 @@ int main(int argc, char **argv)
     std::cout<<"after showing input image"<<std::cout;
 
 
-    cv::Mat blurred=convolution(k,mIn);
 
-    // show output image: first convert to interleaved opencv format from the layered raw array
-    showImage("Blurred", blurred, 100+w+40, 100);
-
-    std::cout<<"after showing blurred image"<<std::cout;
 
     // Init raw input image array
     // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
@@ -337,6 +337,12 @@ int main(int argc, char **argv)
 
     convert_layered_to_mat(mOut, imgOut);
     showImage("Convolution GPU", mOut, 100+2*w+40, 100);
+
+
+    //cv::Mat blurred=convolution(k,mIn);
+    // show output image: first convert to interleaved opencv format from the layered raw array
+    //showImage("Blurred", blurred, 100+w+40, 100);
+    //std::cout<<"after showing blurred image"<<std::cout;
     
     // ### Display your own output images here as needed
 
