@@ -78,7 +78,7 @@ void imagesc(std::string name, cv::Mat mat){
 }
 
 //ex7
-__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, float *imgShared, Params params){
+__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, float *imgShared, Params params,bool useLectureConv){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     
@@ -144,35 +144,32 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, float
         
         float sum=0;
 
-        //like in thomas lecture
-        /*
-        for(int kx=-r; kx<r; kx++){
-            for(int ky=-r; ky<r; ky++){
-                int xi = x + kx; 
-                int xk = kx+r;
-                int yi = y + ky; 
-                int yk = ky+r;
-                int xs = xi - xo + r;
-                int ys = yi - yo + r;
-                sum+=shmem[xs + ys*shw] * kernel[xk + yk*r];
+        //like in thomas lecture  //TODO Dennis: you can fix this if you want
+        if(useLectureConv){
+            for(int kx=-r; kx<=r; kx++){
+                for(int ky=-r; ky<=r; ky++){
+                    int xi = x + kx; 
+                    int xk = kx+r;
+                    int yi = y + ky; 
+                    int yk = ky+r;
+                    int xs = xi - xo + r;
+                    int ys = yi - yo + r;
+                    sum+=shmem[xs + ys*shw] * kernel[xk + yk*r];
+                }
             }
-        }
-        */
-        
-        //convolution using markus indexing
-        int kernelSize=2*r+1;
-
-        for(int i=0;i<kernelSize;i++){
-            for(int j=0;j<kernelSize;j++){
-                int x_new=threadIdx.x+i;
-                int y_new=threadIdx.y+j;
-                sum+=kernel[i+j*kernelSize]*shmem[x_new+y_new*shw];
+        }else{
+        //convolution using adrian + markus indexing
+            int kernelSize=2*r+1;
+            for(int i=0;i<kernelSize;i++){
+                for(int j=0;j<kernelSize;j++){
+                    int x_new=threadIdx.x+i;
+                    int y_new=threadIdx.y+j;
+                    sum+=kernel[i+j*kernelSize]*shmem[x_new+y_new*shw];
+                }
             }
         }
         
         imgOut[x+w*y+w*h*c]=sum;
-
-
     }
 }
 
@@ -262,6 +259,7 @@ int main(int argc, char **argv)
     // ###
     // ###
     cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mOut3(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
 
 
 
@@ -276,6 +274,8 @@ int main(int argc, char **argv)
     float *imgIn  = new float[n];
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
     float *imgOut = new float[n];
+    float *imgOut2 = new float[n];
+
 
     size_t n1 = (size_t)w*h*1;
     float *imgKernel  = new float[n1];
@@ -346,8 +346,8 @@ int main(int argc, char **argv)
 
     Params params;
     params.r=r;
-    params.shw = (block.x + 2*r+1);
-    params.shh = (block.y + 2*r+1);
+    params.shw = (block.x + 2*r);
+    params.shh = (block.y + 2*r);
     params.w = w;
     params.h = h;
     params.nc = nc;
@@ -375,13 +375,17 @@ int main(int argc, char **argv)
     cout<<"after malloc"<<endl;
 
 
-
-
-    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, d_imgShared, params);CUDA_CHECK;
-    cudaDeviceSynchronize();CUDA_CHECK;
-
-	cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+    //adrians indexing: ok
+    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, d_imgShared, params, false);CUDA_CHECK;
+    cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
     cudaMemcpy(imgShared, d_imgShared, n3 * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+
+    //using lecture indexig: still buggy
+    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, d_imgShared, params, true);CUDA_CHECK;
+    cudaMemcpy(imgOut2, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+
+
+
 
     cout<<"after kernel"<<endl;
 
@@ -397,7 +401,12 @@ int main(int argc, char **argv)
 
 
     convert_layered_to_mat(mOut, imgOut);
-    showImage("Convolution GPU", mOut, 100+2*w+40, 100);
+    showImage("Convolution GPU", mOut, 100+w+40, 100);
+
+    convert_layered_to_mat(mOut3, imgOut2);
+    showImage("Convolution GPU - lecture indexing", mOut3, 100+2*w+40, 100);
+
+    imagesc("diff", mOut3-mOut);
 
     convert_layered_to_mat(mOut2, imgShared);
     cout<<"block size "<<block.x<<"x"<<block.y<<endl;
