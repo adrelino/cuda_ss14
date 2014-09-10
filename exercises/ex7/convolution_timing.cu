@@ -39,6 +39,8 @@ typedef struct Params {
     int r;
 } Params;
 
+// create texture for storing input image
+texture<float, 2, cudaReadModeElementType> texRef;
 
 //ex1
 cv::Mat kernel(float sigma, int r){
@@ -78,6 +80,35 @@ void imagesc(std::string name, cv::Mat mat){
 }
 
 //ex7
+__global__ void convolutionGlobal(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int kernelSize){
+    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = kernelSize;
+
+    int rx=k/2;
+    int ry=k/2;
+
+    if(x>=w || y>=h) return; //check for blocks
+
+    for(unsigned int c=0;c<nc;c++) {
+        float sum=0;
+        for(unsigned int i=0;i<k;i++){
+            unsigned int x_new;
+            if(x+rx<i) x_new=rx;
+            else if(x+rx-i>=w) x_new=w+rx-1;
+            else x_new=x+rx-i;
+            for(unsigned int j=0;j<k;j++){
+                unsigned int y_new;
+                if(y+ry<j) y_new=ry;
+                else if(y+ry-j>=h) y_new=h+ry-1;
+                else y_new=y+ry-j;
+                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
+            }
+        }
+        imgOut[x+w*y+w*h*c]=sum;
+    }
+}
+
 __global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Params params){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -135,6 +166,36 @@ __global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Pa
 	    sum+=kernel[i+j*kernelSize]*shmem[x_new+y_new*shw];
 	  }
 	}
+        imgOut[x+w*y+w*h*c]=sum;
+    }
+}
+
+__global__ void convolutionTexture(float *imgOut, float *kernel, int w, int h, int nc, int kernelSize) {
+    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = kernelSize;
+
+    int rx=kernelSize/2;
+    int ry=kernelSize/2;
+
+    if(x>=w || y>=h) return; //check for blocks
+
+    for(size_t c=0;c<nc;c++) {
+        float sum=0;
+        for(size_t i=0;i<k;i++){
+            size_t x_new;
+	    x_new=x+rx-i;
+	    
+            for(size_t j=0;j<k;j++){
+                size_t y_new;
+		y_new=y+ry-j;
+
+		float x_tex = x_new + 0.5f;
+		float y_tex = y_new + c*h;
+
+                sum+=kernel[i+j*k]*tex2D(texRef, x_tex, y_tex);
+            }
+        }
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
@@ -212,13 +273,9 @@ int main(int argc, char **argv)
     int nc = mIn.channels();  // number of channels
 
     // Set the output image format
-    // ###
-    // ###
-    // ### TODO: Change the output image format as needed
-    // ###
-    // ###
-    cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
-    cv::Mat mOut3(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mShared(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mGlobal(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mTexture(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
 
     // Allocate arrays
     // input/output image width: w
@@ -230,7 +287,9 @@ int main(int argc, char **argv)
     size_t n = (size_t)w*h*nc;
     float *imgIn  = new float[n];
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
-    float *imgOut = new float[n];
+    float *imgShared = new float[n];
+    float *imgGlobal = new float[n];
+    float *imgTexture = new float[n];
 
     size_t n1 = (size_t)w*h*1;
     float *imgKernel  = new float[n1];
@@ -252,12 +311,9 @@ int main(int argc, char **argv)
 
     int r = ceil(3.0f*sigma);
     cv::Mat k=kernel(sigma,r);
-    
-    imagesc("Kernel", k);
-
 
     // show input image
-    showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
+    showImage("Input image", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
     // Init raw input image array
     // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
@@ -266,13 +322,13 @@ int main(int argc, char **argv)
     convert_mat_to_layered(imgIn, mIn);
     convert_mat_to_layered(imgKernel,k);
 
-    
     assert(k.rows == k.cols);
 
-    float *d_imgIn, *d_imgKernel, *d_imgOut, *d_imgShared;
+    float *d_imgIn, *d_imgKernel;
+    float *d_imgShared, *d_imgGlobal, *d_imgTexture;
     Params *d_params;
 
-    dim3 block = dim3(16,16,1); //32,16 for birds eye
+    dim3 block = dim3(32,4,1); //32,16 for birds eye
     dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     Params params;
@@ -283,36 +339,66 @@ int main(int argc, char **argv)
     params.h = h;
     params.nc = nc;
 
-
     size_t smBytes = params.shw * params.shh * sizeof(float);
-
-    size_t n3 = (size_t)params.shw*params.shh*nc;
-    float *imgShared  = new float[n3];
-    cv::Mat mOut2(params.shh,params.shw,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
-
 
     cudaMalloc(&d_params, sizeof(Params) );CUDA_CHECK;
     cudaMemcpy(d_params, &params, sizeof(Params), cudaMemcpyHostToDevice);CUDA_CHECK;
+
     cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
     cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-    cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
-    cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-    cudaMalloc(&d_imgShared, n3 * sizeof(float) );CUDA_CHECK;
-    cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
 
-    //adrians indexing: ok
-    convolutionShared <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, params);CUDA_CHECK;
-    cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgShared, d_imgShared, n3 * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+    size_t kernelSize = (2*r+1);
+    cudaMalloc(&d_imgKernel,  kernelSize * kernelSize* sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, imgKernel, kernelSize * kernelSize * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+
+    cudaMalloc(&d_imgShared, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_imgGlobal, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_imgTexture, n * sizeof(float) ); CUDA_CHECK;
+
+    // now set up the texture stuff
+    texRef.addressMode[0] = cudaAddressModeClamp;
+    texRef.addressMode[1] = cudaAddressModeClamp;
+    texRef.filterMode = cudaFilterModePoint;
+    texRef.normalized = false;
+    cudaChannelFormatDesc desc = cudaCreateChannelDesc<float>();
+
+    cudaBindTexture2D(NULL, &texRef, d_imgIn, &desc, w, nc * h, w * sizeof(d_imgIn[0]));
+    CUDA_CHECK;
+
+    // do convolution with shared memory
+    convolutionShared<<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgShared, params);CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+    cudaMemcpy(imgShared, d_imgShared, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+    convolutionGlobal<<<grid,block>>>(d_imgIn, d_imgKernel, d_imgGlobal, w, h, nc, kernelSize); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+    cudaMemcpy(imgGlobal, d_imgGlobal, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+    convolutionTexture<<<grid,block>>>(d_imgTexture, d_imgKernel, w, h, nc, kernelSize); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+    cudaMemcpy(imgTexture, d_imgTexture, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+    // unbind texture
+    cudaUnbindTexture(texRef);CUDA_CHECK;
 
     cudaFree(d_imgIn);CUDA_CHECK;
-    cudaFree(d_imgOut);CUDA_CHECK;
     cudaFree(d_imgKernel);CUDA_CHECK;
     cudaFree(d_params);CUDA_CHECK;
     cudaFree(d_imgShared);CUDA_CHECK;
+    cudaFree(d_imgGlobal);CUDA_CHECK;
+    cudaFree(d_imgTexture);CUDA_CHECK;
 
-    convert_layered_to_mat(mOut, imgOut);
-    showImage("Convolution Shared Memory", mOut, 100+w+40, 100);
+    convert_layered_to_mat(mShared, imgShared);
+    showImage("Convolution Shared Memory", mShared, 100+w+40, 100);
+
+    convert_layered_to_mat(mGlobal, imgGlobal);
+    showImage("Convolution Global Memory", mGlobal, 100+2*w+40, 100);
+
+    convert_layered_to_mat(mTexture, imgTexture);
+    showImage("Convolution Texture Memory", mTexture, 100+3*w+40, 100);
+
+    // convert_layered_to_mat(mTexture, imgTexture);
+    // showImage("Convolution Texture Memory", mTexture, 100+3*w+40, 100);
 
     //cv::Mat blurred=convolution(k,mIn);
     // show output image: first convert to interleaved opencv format from the layered raw array
@@ -335,8 +421,11 @@ int main(int argc, char **argv)
 
     // free allocated arrays
     delete[] imgIn;
-    delete[] imgOut;
     delete[] imgKernel;
+
+    delete[] imgShared;
+    delete[] imgTexture;
+    delete[] imgGlobal;
 
     // close all opencv windows
     cvDestroyAllWindows();
