@@ -41,11 +41,15 @@ typedef struct Params {
 
 
 //ex1
-cv::Mat kernel(float sigma){
-    int r = ceil(3*sigma);
+cv::Mat kernel(float sigma, int r){
     float sigma2=powf(sigma,2);
 
     cv::Mat kernel(2*r+1,2*r+1,CV_32FC1);
+
+    if(r==0){
+        kernel.at<float>(0,0)=1;
+        return kernel;
+    }
 
     for (int i = 0; i <= r; ++i)
     {
@@ -62,9 +66,6 @@ cv::Mat kernel(float sigma){
     float s = sum(kernel)[0];
     kernel/=s;
 
-    //std::cout<<"kernel:"<<std::endl;
-    //std::cout<<kernel<<std::endl;
-
     return kernel;
 }
 
@@ -77,7 +78,7 @@ void imagesc(std::string name, cv::Mat mat){
 }
 
 //ex7
-__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, Params params){
+__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, float *imgShared, Params params){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     
@@ -103,8 +104,9 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, Param
 
     for(unsigned int c=0;c<nc;c++,__syncthreads()) {
 
+        ////////
         //step 1: copy data into shared memory, with clamping padding
-
+        //
         for(int pt=tx+bdx*ty ; pt<shw*shh ;pt+=bdx*bdy){
             int xi = (pt % shw) + (bx *bdx - r);
             int yi = (pt / shw) + (by *bdy - r);
@@ -112,20 +114,38 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, Param
             xi = max(min(xi,w-1),0);
             yi = max(min(yi,h-1),0);
 
-            shmem[pt] = imgIn[xi + yi*w + c*w*h]; 
+            float val=imgIn[xi + yi*w + c*w*h];
+
+            shmem[pt] = val; 
+
+            //copy birds eye shared mem patch to global mem
+            if(blockIdx.x==6 && blockIdx.y==10) imgShared[pt + shw*shh*c] = val;
         }
 
         __syncthreads();
 
+
+        ///////
+        //step 2: convolution, no more clamping needed
+        //
         if(x>=w || y>=h) continue; //check for block border only AFTER copying to shared mem (goes over block borders)
 
-
         //testing of copying to shared memory and back, no convolution
-        imgOut[x+w*y+w*h*c] = shmem[(threadIdx.x+r) + (threadIdx.y+r)*shw];
+        //imgOut[x+w*y+w*h*c] = shmem[(threadIdx.x+r) + (threadIdx.y+r)*shw]; continue;
 
-        //step 2: convolution, no more clamping needed
+        //testing of visualizing grid blocks
         /*
+        if(threadIdx.x > 1 && threadIdx.y > 1){
+            imgOut[x+w*y+w*h*c]=0;
+        }else{
+            imgOut[x+w*y+w*h*c]=1;
+        } continue;
+        */
+        
         float sum=0;
+
+        //like in thomas lecture
+        /*
         for(int kx=-r; kx<r; kx++){
             for(int ky=-r; ky<r; ky++){
                 int xi = x + kx; 
@@ -137,8 +157,22 @@ __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, Param
                 sum+=shmem[xs + ys*shw] * kernel[xk + yk*r];
             }
         }
-        imgOut[x+w*y+w*h*c]=sum;
         */
+        
+        //convolution using markus indexing
+        int kernelSize=2*r+1;
+
+        for(int i=0;i<kernelSize;i++){
+            for(int j=0;j<kernelSize;j++){
+                int x_new=threadIdx.x+i;
+                int y_new=threadIdx.y+j;
+                sum+=kernel[i+j*kernelSize]*shmem[x_new+y_new*shw];
+            }
+        }
+        
+        imgOut[x+w*y+w*h*c]=sum;
+
+
     }
 }
 
@@ -181,7 +215,7 @@ int main(int argc, char **argv)
 
     float sigma=3.0f;
     getParam("sigma", sigma, argc, argv);
-    if(sigma<=0) sigma=3.0f;
+    if(sigma<0) sigma=3.0f;
     cout << "sigma: " << sigma << endl;
 
 
@@ -269,7 +303,8 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-    cv::Mat k=kernel(sigma);
+    int r = ceil(3.0f*sigma);
+    cv::Mat k=kernel(sigma,r);
     
     imagesc("Kernel", k);
 
@@ -290,26 +325,29 @@ int main(int argc, char **argv)
     convert_mat_to_layered(imgKernel,k);
 
 	//GPU:
-
-    int r=k.cols;
-    if(k.rows!=r){
+    if(k.rows!=k.cols){
         cout<<"kernel not squared!!"<<endl; return -1;
     }else{
         cout << "r: " << r << endl;
+        if(r<10){
+            cout << "Kernel: " << k <<endl;
+        }else{
+            cout << "Kernel: " << k.rows << "x" << k.cols << endl;
+        }
     }
     
-	float *d_imgIn, *d_imgKernel, *d_imgOut;
+	float *d_imgIn, *d_imgKernel, *d_imgOut, *d_imgShared;
     Params *d_params;
 
-    dim3 block = dim3(32,8,1);
+    dim3 block = dim3(16,16,1); //32,16 for birds eye
     dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
 
     Params params;
     params.r=r;
-    params.shw = (block.x + r);
-    params.shh = (block.y + r);
+    params.shw = (block.x + 2*r+1);
+    params.shh = (block.y + 2*r+1);
     params.w = w;
     params.h = h;
     params.nc = nc;
@@ -317,30 +355,56 @@ int main(int argc, char **argv)
 
     size_t smBytes = params.shw * params.shh * sizeof(float);
 
+    size_t n3 = (size_t)params.shw*params.shh*nc;
+    float *imgShared  = new float[n3];
+    cv::Mat mOut2(params.shh,params.shw,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+
+
+    cout<<"before malloc"<<endl;
+
+
     cudaMalloc(&d_params, sizeof(Params) );CUDA_CHECK;
     cudaMemcpy(d_params, &params, sizeof(Params), cudaMemcpyHostToDevice);CUDA_CHECK;
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
     cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgShared, n3 * sizeof(float) );CUDA_CHECK;
     cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
 
+    cout<<"after malloc"<<endl;
 
 
-    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, params);CUDA_CHECK;
+
+
+    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, d_imgShared, params);CUDA_CHECK;
     cudaDeviceSynchronize();CUDA_CHECK;
 
 	cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+    cudaMemcpy(imgShared, d_imgShared, n3 * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+
+    cout<<"after kernel"<<endl;
+
 
 	cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgOut);CUDA_CHECK;
     cudaFree(d_imgKernel);CUDA_CHECK;
     cudaFree(d_params);CUDA_CHECK;
+    cudaFree(d_imgShared);CUDA_CHECK;
+
+    cout<<"after free"<<endl;
 
 
 
     convert_layered_to_mat(mOut, imgOut);
     showImage("Convolution GPU", mOut, 100+2*w+40, 100);
+
+    convert_layered_to_mat(mOut2, imgShared);
+    cout<<"block size "<<block.x<<"x"<<block.y<<endl;
+    cout << "r: " << r << endl;
+    cout<<"shared memory Block "<<mOut2.cols<<"x"<<mOut2.rows<<" :"<<endl;
+    //cout<<mOut2<<endl;
+    showImage("SharedMemory Block", mOut2, 100+3*w+40, 100);
 
 
     //cv::Mat blurred=convolution(k,mIn);
