@@ -11,9 +11,14 @@
 // ###
 // ###
 
+// ###
+// ###
+// ### TODO: For every student of your group, please provide here:
+// ###
+// ### name, email, login username (for example p123)
 // ### Dennis Mack, dennis.mack@tum.de, p060
 // ### Adrian Haarbach, haarbach@in.tum.de, p077
-// ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
+// ### Markus Schlaffer, , p070
 
 
 #include "aux.h"
@@ -25,70 +30,111 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
-// create texture for storing input image
-texture<float, 2, cudaReadModeElementType> texRef;
+typedef struct Params {
+    int shw;
+    int shh;
+    int w;
+    int h;
+    int nc;
+    int r;
+} Params;
 
-#define MAX_RADIUS 20
 
-const int KERNEL_SIZE = 2*MAX_RADIUS+1;
-
-__constant__ int kernelSize;
-__constant__ float kernel[KERNEL_SIZE*KERNEL_SIZE];
-
-cv::Mat createKernel(float sigma){
-    int r = ceil(3*sigma);
-
-    if (r > MAX_RADIUS)
-      r = MAX_RADIUS;
-
+//ex1
+cv::Mat kernel(float sigma, int r){
     float sigma2=powf(sigma,2);
 
-    cv::Mat k = cv::Mat::zeros (KERNEL_SIZE,KERNEL_SIZE,CV_32FC1);
+    cv::Mat kernel(2*r+1,2*r+1,CV_32FC1);
+
+    if(r==0){
+        kernel.at<float>(0,0)=1;
+        return kernel;
+    }
 
     for (int i = 0; i <= r; ++i)
     {
         for (int j = 0; j <= r; ++j)
         {
             float value=1/(2*M_PI*sigma2) * expf( -( powf(i,2)+powf(j,2) ) / (2*sigma2) );
-            k.at<float>(MAX_RADIUS+i,MAX_RADIUS+j)=value;
-            k.at<float>(MAX_RADIUS-i,MAX_RADIUS+j)=value;
-            k.at<float>(MAX_RADIUS+i,MAX_RADIUS-j)=value;
-            k.at<float>(MAX_RADIUS-i,MAX_RADIUS-j)=value;
+            kernel.at<float>(r+i,r+j)=value;
+            kernel.at<float>(r-i,r+j)=value;
+            kernel.at<float>(r+i,r-j)=value;
+            kernel.at<float>(r-i,r-j)=value;
         }
     }
 
-    float s = sum(k)[0];
-    k/=s;
+    float s = sum(kernel)[0];
+    kernel/=s;
 
-    return k;
+    return kernel;
 }
 
-__global__ void convolutionGPUTex(float *imgOut, int w, int h, int nc) {
+//ex2
+void imagesc(std::string name, cv::Mat mat){
+    double min,max;
+    cv::minMaxLoc(mat,&min,&max);
+    cv::Mat  kernel_prime = mat/max;
+    showImage(name, kernel_prime, 50,50);
+}
+
+//ex7
+__global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Params params){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t k = kernelSize;
 
-    int rx=kernelSize/2;
-    int ry=kernelSize/2;
+    extern __shared__ float shmem[];
 
-    if(x>=w || y>=h) return; //check for blocks
+    int r=params.r;
+    int nc=params.nc;
+    int w=params.w;
+    int h=params.h;
+    int shw=params.shw;
+    int shh=params.shh;
 
-    for(size_t c=0;c<nc;c++) {
-        float sum=0;
-        for(size_t i=0;i<k;i++){
-            size_t x_new;
-	    x_new=x+rx-i;
-	    
-            for(size_t j=0;j<k;j++){
-                size_t y_new;
-		y_new=y+ry-j;
 
-		float x_tex = x_new + 0.5f;
-		float y_tex = y_new + c*h;
+    int tx=threadIdx.x;
+    int bx=blockIdx.x;
+    int ty=threadIdx.y;
+    int by=blockIdx.y;   
+    int bdx=blockDim.x;
+    int bdy=blockDim.y;   
 
-                sum+=kernel[i+j*k]*tex2D(texRef, x_tex, y_tex);
-            }
+    for(unsigned int c=0;c<nc;c++,__syncthreads()) {
+
+        ////////
+        //step 1: copy data into shared memory, with clamping padding
+        //
+        for(int pt=tx+bdx*ty ; pt<shw*shh ;pt+=bdx*bdy){
+            int xi = (pt % shw) + (bx *bdx - r);
+            int yi = (pt / shw) + (by *bdy - r);
+
+            xi = max(min(xi,w-1),0);
+            yi = max(min(yi,h-1),0);
+
+            float val=imgIn[xi + yi*w + c*w*h];
+
+            shmem[pt] = val; 
         }
+
+        __syncthreads();
+
+
+        ///////
+        //step 2: convolution, no more clamping needed
+        //
+        if(x>=w || y>=h) continue; //check for block border only AFTER copying to shared mem (goes over block borders)
+
+        float sum=0;
+
+        //convolution using adrian + markus indexing
+	int kernelSize=2*r+1;
+	for(int i=0;i<kernelSize;i++){
+	  for(int j=0;j<kernelSize;j++){
+	    int x_new=threadIdx.x+i;
+	    int y_new=threadIdx.y+j;
+	    sum+=kernel[i+j*kernelSize]*shmem[x_new+y_new*shw];
+	  }
+	}
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
@@ -127,10 +173,11 @@ int main(int argc, char **argv)
 
     // ### Define your own parameters here as needed    
 
-    float sigma=1.0f;
+    float sigma=3.0f;
     getParam("sigma", sigma, argc, argv);
-    if(sigma<=0) sigma=1.0f;
+    if(sigma<0) sigma=3.0f;
     cout << "sigma: " << sigma << endl;
+
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -163,7 +210,6 @@ int main(int argc, char **argv)
     int w = mIn.cols;         // width
     int h = mIn.rows;         // height
     int nc = mIn.channels();  // number of channels
-    cout << "image: " << w << " x " << h << " nc="<<nc <<endl;
 
     // Set the output image format
     // ###
@@ -172,6 +218,7 @@ int main(int argc, char **argv)
     // ###
     // ###
     cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mOut3(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
 
     // Allocate arrays
     // input/output image width: w
@@ -184,6 +231,9 @@ int main(int argc, char **argv)
     float *imgIn  = new float[n];
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
     float *imgOut = new float[n];
+
+    size_t n1 = (size_t)w*h*1;
+    float *imgKernel  = new float[n1];
 
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
@@ -200,8 +250,14 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-    float *imgKernel  = new float[KERNEL_SIZE*KERNEL_SIZE];
-    cv::Mat k=createKernel(sigma);
+    int r = ceil(3.0f*sigma);
+    cv::Mat k=kernel(sigma,r);
+    
+    imagesc("Kernel", k);
+
+
+    // show input image
+    showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
     // Init raw input image array
     // opencv images are interleaved: rgb rgb rgb...  (actually bgr bgr bgr...)
@@ -210,47 +266,53 @@ int main(int argc, char **argv)
     convert_mat_to_layered(imgIn, mIn);
     convert_mat_to_layered(imgKernel,k);
 
-    //GPU:
-    float *d_imgIn, *d_imgOut;
-    cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
-    cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-
-    // now set up the texture stuff
-    texRef.addressMode[0] = cudaAddressModeClamp;
-    texRef.addressMode[1] = cudaAddressModeClamp;
-    texRef.filterMode = cudaFilterModePoint;
-    texRef.normalized = false;
-    cudaChannelFormatDesc desc = cudaCreateChannelDesc<float>();
-
-    // copy constants
-    cudaMemcpyToSymbol(kernelSize, &KERNEL_SIZE, sizeof(int), 0, cudaMemcpyHostToDevice); CUDA_CHECK;
-    cudaMemcpyToSymbol(kernel, imgKernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float), 0, cudaMemcpyHostToDevice); CUDA_CHECK;
     
-    cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
+    assert(k.rows == k.cols);
 
-    // problem with gt8800
-    // dim3 block = dim3(32,8,1);
-    dim3 block = dim3(32,4,1);
+    float *d_imgIn, *d_imgKernel, *d_imgOut, *d_imgShared;
+    Params *d_params;
+
+    dim3 block = dim3(16,16,1); //32,16 for birds eye
     dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
-    cudaBindTexture2D(NULL, &texRef, d_imgIn, &desc, w, nc * h, w * sizeof(d_imgIn[0]));
-    CUDA_CHECK;
-    
-    convolutionGPUTex<<<grid,block>>>(d_imgOut, w, h, nc);
-    CUDA_CHECK;
-    
-    cudaUnbindTexture(texRef);
-    CUDA_CHECK;
+    Params params;
+    params.r=r;
+    params.shw = (block.x + 2*r);
+    params.shh = (block.y + 2*r);
+    params.w = w;
+    params.h = h;
+    params.nc = nc;
 
+
+    size_t smBytes = params.shw * params.shh * sizeof(float);
+
+    size_t n3 = (size_t)params.shw*params.shh*nc;
+    float *imgShared  = new float[n3];
+    cv::Mat mOut2(params.shh,params.shw,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+
+
+    cudaMalloc(&d_params, sizeof(Params) );CUDA_CHECK;
+    cudaMemcpy(d_params, &params, sizeof(Params), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgShared, n3 * sizeof(float) );CUDA_CHECK;
+    cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
+
+    //adrians indexing: ok
+    convolutionShared <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, params);CUDA_CHECK;
     cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+    cudaMemcpy(imgShared, d_imgShared, n3 * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
 
     cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgOut);CUDA_CHECK;
-
-    showImage("Input image", mIn, 100, 100);
+    cudaFree(d_imgKernel);CUDA_CHECK;
+    cudaFree(d_params);CUDA_CHECK;
+    cudaFree(d_imgShared);CUDA_CHECK;
 
     convert_layered_to_mat(mOut, imgOut);
-    showImage("Convolution using Texure Memory", mOut, 100+w+40, 100);
+    showImage("Convolution Shared Memory", mOut, 100+w+40, 100);
 
     //cv::Mat blurred=convolution(k,mIn);
     // show output image: first convert to interleaved opencv format from the layered raw array
@@ -258,6 +320,7 @@ int main(int argc, char **argv)
     //std::cout<<"after showing blurred image"<<std::cout;
     
     // ### Display your own output images here as needed
+
 #ifdef CAMERA
     // end of camera loop
     }
@@ -273,6 +336,7 @@ int main(int argc, char **argv)
     // free allocated arrays
     delete[] imgIn;
     delete[] imgOut;
+    delete[] imgKernel;
 
     // close all opencv windows
     cvDestroyAllWindows();
