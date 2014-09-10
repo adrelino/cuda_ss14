@@ -152,7 +152,7 @@ __global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int w, in
             else x_new=x+rx-i;
             for(unsigned int j=0;j<k;j++){
                 unsigned int y_new;
-                if(y+ry<j) y_new=0;
+                if(y+ry<j) y_new=ry;
                 else if(y+ry-j>=h) y_new=h+ry-1;
                 else y_new=y+ry-j;
                 sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];

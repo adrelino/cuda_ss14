@@ -30,6 +30,16 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
+typedef struct Params {
+    int shw;
+    int shh;
+    int w;
+    int h;
+    int nc;
+    int r;
+} Params;
+
+
 //ex1
 cv::Mat kernel(float sigma){
     int r = ceil(3*sigma);
@@ -67,44 +77,68 @@ void imagesc(std::string name, cv::Mat mat){
 }
 
 //ex7
-__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int wk, int hk){
+__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, Params params){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t k = wk;//==hk
+    
+    size_t xo = blockDim.x * blockIdx.x;
+    size_t yo = blockDim.y * blockIdx.y;
 
-    int rx=wk/2;
-    int ry=hk/2;
+    extern __shared__ float shmem[];
 
-    int ws=blockDim.x + wk -1;
-    int hs=blockDim.y + hk -1;
-    int iblockX=threadIdx.x + rx;
-    int iblockY=threadIdx.y + ry;
+    int r=params.r;
+    int nc=params.nc;
+    int w=params.w;
+    int h=params.h;
+    int shw=params.shw;
+    int shh=params.shh;
 
-    extern __shared__ float sh_data[];
 
-    if(x>=w || y>=h) return; //check for blocks
+    int tx=threadIdx.x;
+    int bx=blockIdx.x;
+    int ty=threadIdx.y;
+    int by=blockIdx.y;   
+    int bdx=blockDim.x;
+    int bdy=blockDim.y;   
 
-    for(unsigned int c=0;c<nc;c++, __syncthreads()) {
+    for(unsigned int c=0;c<nc;c++,__syncthreads()) {
 
-        sh_data[iblockX + ws * iblockY]=imgIn[x+w*y+w*h*c];
-        //TODO handle thread block boundary
+        //step 1: copy data into shared memory, with clamping padding
 
+        for(int pt=tx+bdx*ty ; pt<shw*shh ;pt+=bdx*bdy){
+            int xi = (pt % shw) + (bx *bdx - r);
+            int yi = (pt / shw) + (by *bdy - r);
+
+            xi = max(min(xi,w-1),0);
+            yi = max(min(yi,h-1),0);
+
+            shmem[pt] = imgIn[xi + yi*w + c*w*h]; 
+        }
+
+        __syncthreads();
+
+        if(x>=w || y>=h) continue; //check for block border only AFTER copying to shared mem (goes over block borders)
+
+
+        //testing of copying to shared memory and back, no convolution
+        imgOut[x+w*y+w*h*c] = shmem[(threadIdx.x+r) + (threadIdx.y+r)*shw];
+
+        //step 2: convolution, no more clamping needed
+        /*
         float sum=0;
-        for(unsigned int i=0;i<k;i++){
-            unsigned int x_new;
-            if(x+rx<i) x_new=rx;
-            else if(x+rx-i>=w) x_new=w+rx-1;
-            else x_new=x+rx-i;
-            for(unsigned int j=0;j<k;j++){
-                unsigned int y_new;
-                if(y+ry<j) y_new=0;
-                else if(y+ry-j>=h) y_new=h+ry-1;
-                else y_new=y+ry-j;
-                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
-                // if(sum<0) cout << "fuck" << endl;
+        for(int kx=-r; kx<r; kx++){
+            for(int ky=-r; ky<r; ky++){
+                int xi = x + kx; 
+                int xk = kx+r;
+                int yi = y + ky; 
+                int yk = ky+r;
+                int xs = xi - xo + r;
+                int ys = yi - yo + r;
+                sum+=shmem[xs + ys*shw] * kernel[xk + yk*r];
             }
         }
         imgOut[x+w*y+w*h*c]=sum;
+        */
     }
 }
 
@@ -219,6 +253,7 @@ int main(int argc, char **argv)
 
 
 
+
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
     // Read a camera image frame every 30 milliseconds:
@@ -242,7 +277,7 @@ int main(int argc, char **argv)
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
-    std::cout<<"after showing input image"<<std::cout;
+    cout<<"after showing input image"<<endl;
 
 
 
@@ -256,32 +291,53 @@ int main(int argc, char **argv)
 
 	//GPU:
 
-    int wk=k.cols;
-    int hk=k.rows;
-	
+    int r=k.cols;
+    if(k.rows!=r){
+        cout<<"kernel not squared!!"<<endl; return -1;
+    }else{
+        cout << "r: " << r << endl;
+    }
+    
 	float *d_imgIn, *d_imgKernel, *d_imgOut;
+    Params *d_params;
+
+    dim3 block = dim3(32,8,1);
+    dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
+
+    cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
+
+    Params params;
+    params.r=r;
+    params.shw = (block.x + r);
+    params.shh = (block.y + r);
+    params.w = w;
+    params.h = h;
+    params.nc = nc;
+
+
+    size_t smBytes = params.shw * params.shh * sizeof(float);
+
+    cudaMalloc(&d_params, sizeof(Params) );CUDA_CHECK;
+    cudaMemcpy(d_params, &params, sizeof(Params), cudaMemcpyHostToDevice);CUDA_CHECK;
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
     cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
 
-	dim3 block = dim3(32,8,1);
-	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
-
-    cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
 
 
-	size_t smBytes = (block.x + wk) * (block.y + hk) * sizeof(float);
-
-    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, w, h, nc, wk, hk);CUDA_CHECK;
-	cudaDeviceSynchronize();CUDA_CHECK;
-
+    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, params);CUDA_CHECK;
+    cudaDeviceSynchronize();CUDA_CHECK;
 
 	cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
 
 	cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgOut);CUDA_CHECK;
+    cudaFree(d_imgKernel);CUDA_CHECK;
+    cudaFree(d_params);CUDA_CHECK;
+
+
 
     convert_layered_to_mat(mOut, imgOut);
     showImage("Convolution GPU", mOut, 100+2*w+40, 100);
@@ -309,6 +365,7 @@ int main(int argc, char **argv)
     // free allocated arrays
     delete[] imgIn;
     delete[] imgOut;
+    delete[] imgKernel;
 
     // close all opencv windows
     cvDestroyAllWindows();
