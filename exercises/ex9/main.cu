@@ -100,16 +100,12 @@ __global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
   int yMinus1 = y-1;
 
   // do clamping
-  if (xPlus1 >= w)
-    xPlus1 = w-1;
-  if (yPlus1 >= h)
-    yPlus1 = h-1;
+  xPlus1 = max(min(xPlus1, w-1), 0);
+  xMinus1 = min(max(xMinus1, 0), w-2);
 
-  if (xMinus1 < 0)
-    xMinus1 = 0;
-  if (yMinus1 < 0)
-    yMinus1 = 0;
-
+  yPlus1 = max(min(yPlus1, h-1), 0);
+  yMinus1 = min(max(yMinus1, 0), h-2);
+  
   // calc derivatives
   for (int c = 0; c < nc; ++c) {
     // x-derivatives
@@ -127,7 +123,6 @@ __global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
                              3*d_img[xPlus1 + yMinus1*w + c*w*h] -
                              10*d_img[x + yMinus1*w + c*w*h] -
                              3*d_img[xMinus1 + yMinus1*w + c*w*h]) / 32.0f;
-
   }
 }
 
@@ -148,13 +143,12 @@ __global__ void createStructureTensor(float *d_dx, float *d_dy, int w, int h, in
 
 __device__ void compute_eigenvalues2x2(float a, float b, float c, float d, float *lambda1, float *lambda2) {
   float trace = a + d;
-  float determinant = a*d - b*c;
+  float sqrt_term = sqrtf(trace*trace - 4*(a*d - b*c));
 
-  *lambda1 = trace / 2.0f + sqrtf((trace*trace)/(4.0f-determinant));
-  *lambda2 = trace / 2.0f - sqrtf((trace*trace)/(4.0f-determinant));
+  *lambda1 = (trace + sqrt_term) / 2.0f;
+  *lambda2 = (trace - sqrt_term) / 2.0f;  
 }
 
-// TODO: use alph and beta as constant variables in CUDA
 __global__ void feature_detection(float *d_imgIn, float *d_imgOut, int w, int h, float *d_m11, float *d_m12, float *d_m22, float alph, float beta) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -167,6 +161,14 @@ __global__ void feature_detection(float *d_imgIn, float *d_imgOut, int w, int h,
 
   compute_eigenvalues2x2(d_m11[x + y*w], d_m12[x + y*w], d_m12[x + y*w], d_m22[x + y*w], &lambda1, &lambda2);
 
+  // we assume that lambda2 >= lambda1 --> make sure this is true!
+  if (lambda1 > lambda2) {
+    float tmp = lambda2;
+    lambda2 = lambda1;
+    lambda1 = tmp;
+  }
+
+  // it is a corner
   if (lambda1 >= alph) {
     d_imgOut[x + y * w] = 1.0f;
     d_imgOut[x + y * w + 1*w*h] = 0.0f;
@@ -226,11 +228,12 @@ int main(int argc, char **argv)
     getParam("sigma", sigma, argc, argv);
     cout << "sigma: " << sigma << endl;
 
-    float alph = 10E-2;
+    float alph = powf(10, -2);
+    float beta = powf(10, -3);
+
     getParam("alpha", alph, argc, argv);
     cout << "alpha: " << alph << endl;
 
-    float beta = 10E-3;
     getParam("beta", beta, argc, argv);
     cout << "beta: " << beta << endl;
 
