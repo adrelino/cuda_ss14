@@ -11,14 +11,9 @@
 // ###
 // ###
 
-// ###
-// ###
-// ### TODO: For every student of your group, please provide here:
-// ###
-// ### name, email, login username (for example p123)
 // ### Dennis Mack, dennis.mack@tum.de, p060
 // ### Adrian Haarbach, haarbach@in.tum.de, p077
-// ### Markus Schlaffer, , p070
+// ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 
 #include "aux.h"
@@ -51,9 +46,6 @@ cv::Mat kernel(float sigma){
 
     float s = sum(kernel)[0];
     kernel/=s;
-
-    //std::cout<<"kernel:"<<std::endl;
-    //std::cout<<kernel<<std::endl;
 
     return kernel;
 }
@@ -317,12 +309,17 @@ int main(int argc, char **argv)
 	float *d_imgIn, *d_imgKernel, *d_imgOut;
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-    cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
-    cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+
+    cudaMalloc(&d_imgKernel, n1 * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, imgKernel, n1 * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    
     cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
 
-	dim3 block = dim3(32,8,1);
-	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
+    // problem with gt8800
+    // dim3 block = dim3(32,8,1);
+
+    dim3 block = dim3(32,4,1);
+    dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
 	
