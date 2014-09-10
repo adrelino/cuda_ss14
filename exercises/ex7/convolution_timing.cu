@@ -42,45 +42,43 @@ typedef struct Params {
 // create texture for storing input image
 texture<float, 2, cudaReadModeElementType> texRef;
 
-//ex1
-cv::Mat kernel(float sigma, int r){
+// we are moving the kernel into constant memory of GPU
+#define MAX_RADIUS 20
+
+const int KERNEL_SIZE = 2*MAX_RADIUS+1;
+
+__constant__ int kernelSize;
+__constant__ float kernel[KERNEL_SIZE*KERNEL_SIZE];
+
+cv::Mat createKernel(float sigma){
+    int r = ceil(3*sigma);
+
+    if (r > MAX_RADIUS)
+      r = MAX_RADIUS;
+
     float sigma2=powf(sigma,2);
 
-    cv::Mat kernel(2*r+1,2*r+1,CV_32FC1);
-
-    if(r==0){
-        kernel.at<float>(0,0)=1;
-        return kernel;
-    }
+    cv::Mat k = cv::Mat::zeros (KERNEL_SIZE,KERNEL_SIZE,CV_32FC1);
 
     for (int i = 0; i <= r; ++i)
     {
         for (int j = 0; j <= r; ++j)
         {
             float value=1/(2*M_PI*sigma2) * expf( -( powf(i,2)+powf(j,2) ) / (2*sigma2) );
-            kernel.at<float>(r+i,r+j)=value;
-            kernel.at<float>(r-i,r+j)=value;
-            kernel.at<float>(r+i,r-j)=value;
-            kernel.at<float>(r-i,r-j)=value;
+            k.at<float>(MAX_RADIUS+i,MAX_RADIUS+j)=value;
+            k.at<float>(MAX_RADIUS-i,MAX_RADIUS+j)=value;
+            k.at<float>(MAX_RADIUS+i,MAX_RADIUS-j)=value;
+            k.at<float>(MAX_RADIUS-i,MAX_RADIUS-j)=value;
         }
     }
 
-    float s = sum(kernel)[0];
-    kernel/=s;
+    float s = sum(k)[0];
+    k/=s;
 
-    return kernel;
+    return k;
 }
 
-//ex2
-void imagesc(std::string name, cv::Mat mat){
-    double min,max;
-    cv::minMaxLoc(mat,&min,&max);
-    cv::Mat  kernel_prime = mat/max;
-    showImage(name, kernel_prime, 50,50);
-}
-
-//ex7
-__global__ void convolutionGlobal(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int kernelSize){
+__global__ void convolutionGlobal(float *imgIn, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t k = kernelSize;
@@ -102,20 +100,20 @@ __global__ void convolutionGlobal(float *imgIn, float *GK, float *imgOut, int w,
                 if(y+ry<j) y_new=ry;
                 else if(y+ry-j>=h) y_new=h+ry-1;
                 else y_new=y+ry-j;
-                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
+                sum+=kernel[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
             }
         }
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
 
-__global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Params params){
+__global__ void convolutionShared(float *imgIn, float *imgOut, Params params){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
     extern __shared__ float shmem[];
 
-    int r=params.r;
+    int r = MAX_RADIUS;
     int nc=params.nc;
     int w=params.w;
     int h=params.h;
@@ -158,7 +156,6 @@ __global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Pa
         float sum=0;
 
         //convolution using adrian + markus indexing
-	int kernelSize=2*r+1;
 	for(int i=0;i<kernelSize;i++){
 	  for(int j=0;j<kernelSize;j++){
 	    int x_new=threadIdx.x+i;
@@ -170,7 +167,7 @@ __global__ void convolutionShared(float *imgIn, float *kernel, float *imgOut, Pa
     }
 }
 
-__global__ void convolutionTexture(float *imgOut, float *kernel, int w, int h, int nc, int kernelSize) {
+__global__ void convolutionTexture(float *imgOut, int w, int h, int nc) {
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t k = kernelSize;
@@ -198,6 +195,14 @@ __global__ void convolutionTexture(float *imgOut, float *kernel, int w, int h, i
         }
         imgOut[x+w*y+w*h*c]=sum;
     }
+}
+
+__host__ float calc_average_time(float *arr, int n) {
+  float cum_sum = 0.0f;
+  for (int i = 0; i < n; ++i)
+    cum_sum += arr[i];
+
+  return cum_sum / n;
 }
 
 int main(int argc, char **argv)
@@ -291,9 +296,6 @@ int main(int argc, char **argv)
     float *imgGlobal = new float[n];
     float *imgTexture = new float[n];
 
-    size_t n1 = (size_t)w*h*1;
-    float *imgKernel  = new float[n1];
-
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
     // Read a camera image frame every 30 milliseconds:
@@ -309,9 +311,6 @@ int main(int argc, char **argv)
     mIn /= 255.f;
 #endif
 
-    int r = ceil(3.0f*sigma);
-    cv::Mat k=kernel(sigma,r);
-
     // show input image
     showImage("Input image", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
@@ -320,21 +319,24 @@ int main(int argc, char **argv)
     // But for CUDA it's better to work with layered images: rrr... ggg... bbb...
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered(imgIn, mIn);
-    convert_mat_to_layered(imgKernel,k);
 
-    assert(k.rows == k.cols);
+    float *imgKernel  = new float[KERNEL_SIZE*KERNEL_SIZE];
+    cv::Mat mKernel = createKernel(sigma);
+    convert_mat_to_layered(imgKernel,mKernel);
 
-    float *d_imgIn, *d_imgKernel;
+    assert(mKernel.rows == mKernel.cols);
+
+    float *d_imgIn;
     float *d_imgShared, *d_imgGlobal, *d_imgTexture;
     Params *d_params;
 
-    dim3 block = dim3(32,4,1); //32,16 for birds eye
+    dim3 block = dim3(32,4,1);
     dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     Params params;
-    params.r=r;
-    params.shw = (block.x + 2*r);
-    params.shh = (block.y + 2*r);
+    params.r=MAX_RADIUS;
+    params.shw = (block.x + 2*params.r);
+    params.shh = (block.y + 2*params.r);
     params.w = w;
     params.h = h;
     params.nc = nc;
@@ -347,9 +349,9 @@ int main(int argc, char **argv)
     cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
     cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
 
-    size_t kernelSize = (2*r+1);
-    cudaMalloc(&d_imgKernel,  kernelSize * kernelSize* sizeof(float) );CUDA_CHECK;
-    cudaMemcpy(d_imgKernel, imgKernel, kernelSize * kernelSize * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    // copy constants
+    cudaMemcpyToSymbol(kernelSize, &KERNEL_SIZE, sizeof(int), 0, cudaMemcpyHostToDevice); CUDA_CHECK;
+    cudaMemcpyToSymbol(kernel, imgKernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float), 0, cudaMemcpyHostToDevice); CUDA_CHECK;
 
     cudaMalloc(&d_imgShared, n * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_imgGlobal, n * sizeof(float) ); CUDA_CHECK;
@@ -366,23 +368,51 @@ int main(int argc, char **argv)
     CUDA_CHECK;
 
     // do convolution with shared memory
-    convolutionShared<<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgShared, params);CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
-    cudaMemcpy(imgShared, d_imgShared, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    float *time_shared = new float[repeats];
+    float *time_global = new float[repeats];
+    float *time_texture = new float[repeats];
+    
+    for (int i = 0; i < repeats; ++i) {
+      Timer timer;
 
-    convolutionGlobal<<<grid,block>>>(d_imgIn, d_imgKernel, d_imgGlobal, w, h, nc, kernelSize); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
-    cudaMemcpy(imgGlobal, d_imgGlobal, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      timer.start();
+      convolutionShared<<<grid,block,smBytes>>> (d_imgIn, d_imgShared, params);CUDA_CHECK;
+      timer.end();
+      time_shared[i] = timer.get();
 
-    convolutionTexture<<<grid,block>>>(d_imgTexture, d_imgKernel, w, h, nc, kernelSize); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      timer.start();
+      convolutionGlobal<<<grid,block>>>(d_imgIn, d_imgGlobal, w, h, nc); CUDA_CHECK;
+      timer.end();
+      time_global[i] = timer.get();
+
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      timer.start();
+      convolutionTexture<<<grid,block>>>(d_imgTexture, w, h, nc); CUDA_CHECK;
+      timer.end();
+      time_texture[i] = timer.get();
+
+      cudaDeviceSynchronize(); CUDA_CHECK;
+    }
+
+    cout << "avg time convolution shared: " << calc_average_time(time_shared, repeats) * 1000 << " ms" << endl;
+    cout << "avg time convolution global: " << calc_average_time(time_global, repeats) * 1000 << " ms" << endl;
+    cout << "avg time convolution texture: " << calc_average_time(time_texture, repeats) * 1000 << " ms" << endl;
+
+    delete[] time_shared;
+    delete[] time_global;
+    delete[] time_texture;
+
     cudaMemcpy(imgTexture, d_imgTexture, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaMemcpy(imgGlobal, d_imgGlobal, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaMemcpy(imgShared, d_imgShared, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;    
 
     // unbind texture
     cudaUnbindTexture(texRef);CUDA_CHECK;
 
     cudaFree(d_imgIn);CUDA_CHECK;
-    cudaFree(d_imgKernel);CUDA_CHECK;
     cudaFree(d_params);CUDA_CHECK;
     cudaFree(d_imgShared);CUDA_CHECK;
     cudaFree(d_imgGlobal);CUDA_CHECK;
