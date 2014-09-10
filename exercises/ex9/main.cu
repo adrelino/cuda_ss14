@@ -151,8 +151,6 @@ __device__ void compute_eigenvalues2x2(float a, float b, float c, float d, float
   *lambda2 = (trace - sqrt_term) / 2.0f;  
 }
 
-// TODO: move gaussian kernel into constant memory
-// TODO: move w, h, nc into constant memory
 __device__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
 				    float *d_dx, float *d_dy,
 				    float *d_imgM11, float *d_imgM12, float *d_imgM22

@@ -27,6 +27,11 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
+__constant__ int w;
+__constant__ int h;
+__constant__ int nc;
+__constant__ int kernel_size;
+
 cv::Mat kernel(float sigma){
     int r = ceil(3*sigma);
     float sigma2=powf(sigma,2);
@@ -51,39 +56,35 @@ cv::Mat kernel(float sigma){
     return kernel;
 }
 
-// TODO: move it back to __device__
-__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int wk, int hk){
+__device__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t k = wk;//==hk
 
-    int rx=wk/2;
-    int ry=hk/2;
-
+    int rx=kernel_size/2;
+    int ry=kernel_size/2;
 
     if(x>=w || y>=h) return; //check for blocks
 
-    for(unsigned int c=0;c<nc;c++) {
+    for(unsigned int c=0;c<numberChannels;c++) {
         float sum=0;
-        for(unsigned int i=0;i<k;i++){
+        for(unsigned int i=0;i<kernel_size;i++){
             unsigned int x_new;
             if(x+rx<i) x_new=rx;
             else if(x+rx-i>=w) x_new=w+rx-1;
             else x_new=x+rx-i;
-            for(unsigned int j=0;j<k;j++){
+            for(unsigned int j=0;j<kernel_size;j++){
                 unsigned int y_new;
                 if(y+ry<j) y_new=0;
                 else if(y+ry-j>=h) y_new=h+ry-1;
                 else y_new=y+ry-j;
-                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
-                // if(sum<0) cout << "fuck" << endl;
+                sum+=GK[i+j*kernel_size]*imgIn[x_new+y_new*w+w*h*c];
             }
         }
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
 
-__global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy, int w, int h, int nc) {
+__device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -100,16 +101,12 @@ __global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
   int yMinus1 = y-1;
 
   // do clamping
-  if (xPlus1 >= w)
-    xPlus1 = w-1;
-  if (yPlus1 >= h)
-    yPlus1 = h-1;
+  xPlus1 = max(min(xPlus1, w-1), 0);
+  xMinus1 = min(max(xMinus1, 0), w-2);
 
-  if (xMinus1 < 0)
-    xMinus1 = 0;
-  if (yMinus1 < 0)
-    yMinus1 = 0;
-
+  yPlus1 = max(min(yPlus1, h-1), 0);
+  yMinus1 = min(max(yMinus1, 0), h-2);
+  
   // calc derivatives
   for (int c = 0; c < nc; ++c) {
     // x-derivatives
@@ -127,11 +124,10 @@ __global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
                              3*d_img[xPlus1 + yMinus1*w + c*w*h] -
                              10*d_img[x + yMinus1*w + c*w*h] -
                              3*d_img[xMinus1 + yMinus1*w + c*w*h]) / 32.0f;
-
   }
 }
 
-__global__ void createStructureTensor(float *d_dx, float *d_dy, int w, int h, int nc, float *d_m11, float *d_m12, float *d_m22) {
+__device__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -146,8 +142,23 @@ __global__ void createStructureTensor(float *d_dx, float *d_dy, int w, int h, in
   }
 }
 
-__global__ void calcStructureTensor(float *d_imgIn, float *GK, int w, int h, int nc, float *d_m11, float *d_m12, float *d_m22) {
+__global__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
+				    float *d_dx, float *d_dy,
+				    float *d_imgM11, float *d_imgM12, float *d_imgM22
+				    ) {
+  // 1) smooth image
+  convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
 
+  // 2) compute spatial derivatives
+  computeSpatialDerivatives(d_imgS, d_dx, d_dy);
+
+  // 3) create structure tensor
+  createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
+  
+  // 4) smooth structure tensor
+  convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
+  convolutionGPU(d_imgM12, d_GK, d_imgM12, 1);
+  convolutionGPU(d_imgM22, d_GK, d_imgM22, 1);  
 }
 
 int main(int argc, char **argv)
@@ -215,29 +226,32 @@ int main(int argc, char **argv)
     // convert range of each channel to [0,1] (opencv default is [0,255])
     mIn /= 255.f;
     // get image dimensions
-    int w = mIn.cols;         // width
-    int h = mIn.rows;         // height
-    int nc = mIn.channels();  // number of channels
-    cout << "image: " << w << " x " << h << endl;
+    int w_h = mIn.cols;         // width
+    int h_h = mIn.rows;         // height
+    int nc_h = mIn.channels();  // number of channels
 
+    cudaMemcpyToSymbol(w, &w_h, sizeof(int), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(h, &h_h, sizeof(int), 0, cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(nc, &nc_h, sizeof(int), 0, cudaMemcpyHostToDevice);
+    
     // Set the output image format
     // ###
     // ###
     // ### TODO: Change the output image format as needed
     // ###
     // ###
-    cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mOut(h_h,w_h,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
 
     // smoothed image and directional derivatives
-    cv::Mat mSmooth(h,w,mIn.type());
-    cv::Mat mImgV1(h, w, mIn.type());
-    cv::Mat mImgV2(h, w, mIn.type());
+    cv::Mat mSmooth(h_h,w_h,mIn.type());
+    cv::Mat mImgV1(h_h, w_h, mIn.type());
+    cv::Mat mImgV2(h_h, w_h, mIn.type());
 
     // components of M (grayscale images)
-    cv::Mat mImgM11(h, w, CV_32FC1);
-    cv::Mat mImgM12(h, w, CV_32FC1);
-    cv::Mat mImgM22(h, w, CV_32FC1);
-
+    cv::Mat mImgM11(h_h, w_h, CV_32FC1);
+    cv::Mat mImgM12(h_h, w_h, CV_32FC1);
+    cv::Mat mImgM22(h_h, w_h, CV_32FC1);
+    
     //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
     //cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
 
@@ -248,25 +262,25 @@ int main(int argc, char **argv)
     // output image number of channels: mOut.channels(), as defined above (nc, 3, or 1)
 
     // allocate raw input image array
-    size_t n = (size_t)w*h*nc;
-    float *imgIn  = new float[(size_t)w*h*nc];
+    size_t n = (size_t)w_h*h_h*nc_h;
+    float *imgIn  = new float[(size_t)w_h*h_h*nc_h];
 
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
-    float *imgOut = new float[(size_t)w*h*mOut.channels()];
+    float *imgOut = new float[(size_t)w_h*h_h*mOut.channels()];
 
     // smoothed image
-    float *imgSmooth = new float[(size_t)w*h*mSmooth.channels()];
+    float *imgSmooth = new float[(size_t)w_h*h_h*mSmooth.channels()];
 
     // derivatives in x-direction
-    float *imgV1 = new float[(size_t)w*h*mImgV1.channels()];
+    float *imgV1 = new float[(size_t)w_h*h_h*mImgV1.channels()];
 
     // derivatives in y-direction
-    float *imgV2 = new float[(size_t)w*h*mImgV2.channels()];
+    float *imgV2 = new float[(size_t)w_h*h_h*mImgV2.channels()];
 
-    float *imgM11 = new float[(size_t)w*h];
-    float *imgM12 = new float[(size_t)w*h];
-    float *imgM22 = new float[(size_t)w*h];
-
+    float *imgM11 = new float[(size_t)w_h*h_h];
+    float *imgM12 = new float[(size_t)w_h*h_h];
+    float *imgM22 = new float[(size_t)w_h*h_h];
+    
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
     // Read a camera image frame every 30 milliseconds:
@@ -292,6 +306,11 @@ int main(int argc, char **argv)
     cv::Mat k = kernel(sigma);
     int wk = k.cols;
     int hk = k.rows;
+
+    // we are assuming symmetric kernels
+    assert(wk == hk);
+    cudaMemcpyToSymbol(kernel_size, &wk, sizeof(int), 0, cudaMemcpyHostToDevice);
+    
     size_t nr_pixels_kernel = wk * hk;
 
     float *imgKernel = new float[nr_pixels_kernel];
@@ -316,7 +335,7 @@ int main(int argc, char **argv)
     cudaMalloc(&d_imgV2, n * sizeof(float)); CUDA_CHECK;
 
     // allocate memory for structure tensor
-    const size_t sz_m = w * h * sizeof(float);
+    const size_t sz_m = w_h * h_h * sizeof(float);
     cudaMalloc(&d_imgM11, sz_m); CUDA_CHECK;
     cudaMalloc(&d_imgM12, sz_m); CUDA_CHECK;
     cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
@@ -334,39 +353,12 @@ int main(int argc, char **argv)
 
     // prepare grid
     dim3 block_size = dim3(32,4,1);
-    dim3 grid_size = dim3((w + block_size.x - 1 ) / block_size.x,(h + block_size.y - 1 ) / block_size.y, 1);
+    dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
 
-    // first, smooth image using GPU
-    convolutionGPU <<<grid_size, block_size>>> (d_imgIn, d_imgKernel, d_imgS, w, h, nc, wk, hk);
+    calcStructureTensor<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, d_imgV1, d_imgV2,
+			d_imgM11, d_imgM12, d_imgM22);
     CUDA_CHECK;
-
-    cudaDeviceSynchronize();
-    CUDA_CHECK;
-
-    // second, create derivatives
-    computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2, w, h, nc);
-    CUDA_CHECK;
-
-    cudaDeviceSynchronize();
-    CUDA_CHECK;
-
-    // third, create structure tensor (m11, m12, m22)
-    createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, w, h, nc, d_imgM11, d_imgM12, d_imgM22);
-    CUDA_CHECK;
-
-    cudaDeviceSynchronize();
-    CUDA_CHECK;
-
-    // fourth, convolve m11, m12, m22  with our kernel
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, w, h, 1, wk, hk);
-    CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, w, h, 1, wk, hk);
-    CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, w, h, 1, wk, hk);
-    CUDA_CHECK;
-    cudaDeviceSynchronize();
-    CUDA_CHECK;
-
+    
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
@@ -375,9 +367,9 @@ int main(int argc, char **argv)
     cudaMemcpy(imgV2, d_imgV2, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
     // copy m11, m12, m22 back
-    cudaMemcpy(imgM11, d_imgM11, w*h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM12, d_imgM12, w*h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM22, d_imgM22, w*h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaMemcpy(imgM11, d_imgM11, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaMemcpy(imgM12, d_imgM12, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+    cudaMemcpy(imgM22, d_imgM22, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
     // free stuff
     cudaFree(d_imgIn); CUDA_CHECK;
@@ -395,27 +387,28 @@ int main(int argc, char **argv)
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
     convert_layered_to_mat(mSmooth, imgSmooth);
-    showImage("Smoothed Image", mSmooth, 100+w+40, 100);
+    showImage("Smoothed Image", mSmooth, 100+w_h+40, 100);
 
     convert_layered_to_mat(mImgV1, imgV1);
-    showImage("x-Derivative", mImgV1, 100+2*w+40, 100);
+    // normalize derivatives
+    showImage("x-Derivative", mImgV1, 100+2*w_h+40, 100);
 
     convert_layered_to_mat(mImgV2, imgV2);
-    showImage("y-Derivative", mImgV2, 100+3*w+40, 100);
+    showImage("y-Derivative", mImgV2, 100+3*w_h+40, 100);
 
-    float scale_factor = 10.0f;
+    float scale_factor = 25.0f;
 
     convert_layered_to_mat(mImgM11, imgM11);
     mImgM11 *= scale_factor;
-    showImage("m11", mImgM11, 100+4*w+40, 100);
+    showImage("m11", mImgM11, 100+4*w_h+40, 100);
 
     convert_layered_to_mat(mImgM12, imgM12);
     mImgM12 *= scale_factor;
-    showImage("m12", mImgM12, 100+5*w+40, 100);
+    showImage("m12", mImgM12, 100+5*w_h+40, 100);
 
     convert_layered_to_mat(mImgM22, imgM22);
     mImgM22 *= scale_factor;
-    showImage("m22", mImgM22, 100+6*w+40, 100);
+    showImage("m22", mImgM22, 100+6*w_h+40, 100);
 
 
 #ifdef CAMERA
