@@ -1,0 +1,14 @@
+3. Now, compile both files with (similarly for addArrays):
+nvcc -o squareArray squareArray.cu --ptxas-options=-v
+How many registers are used by your kernels?
+
+-- Output:
+nvcc -o squareArray squareArray.cu --ptxas-options=-v
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_Z11kernel_callPfm' for 'sm_10'
+ptxas info    : Used 2 registers, 32 bytes smem
+
+nvcc -o addArrays addArrays.cu --ptxas-options=-v
+ptxas info    : 0 bytes gmem
+ptxas info    : Compiling entry function '_Z11kernel_callPfS_S_m' for 'sm_10'
+ptxas info    : Used 4 registers, 48 bytes smem
