@@ -30,34 +30,6 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
-/*//ex1
-cv::Mat kernel(float sigma){
-    int r = ceil(3*sigma);
-    float sigma2=powf(sigma,2);
-
-    cv::Mat kernel(2*r+1,2*r+1,CV_32FC1);
-
-    for (int i = 0; i <= r; ++i)
-    {
-        for (int j = 0; j <= r; ++j)
-        {
-            float value=1/(2*M_PI*sigma2) * expf( -( powf(i,2)+powf(j,2) ) / (2*sigma2) );
-            kernel.at<float>(r+i,r+j)=value;
-            kernel.at<float>(r-i,r+j)=value;
-            kernel.at<float>(r+i,r-j)=value;
-            kernel.at<float>(r-i,r-j)=value;
-        }
-    }
-
-    float s = sum(kernel)[0];
-    kernel/=s;
-
-    //std::cout<<"kernel:"<<std::endl;
-    //std::cout<<kernel<<std::endl;
-
-    return kernel;
-}*/
-
 float gaussian(float x, float y, float sigma){
     return expf(-(x*x+y*y)/(2*sigma*sigma))/2.0f/M_PI/sigma/sigma;
 }
@@ -80,167 +52,70 @@ void createKernel(float sigma, float* GK, int k){
     }
 }
 
-/*//ex2
-void imagesc(std::string name, cv::Mat mat){
-    double min,max;
-    cv::minMaxLoc(mat,&min,&max);
-    cv::Mat  kernel_prime = mat/max;
-    showImage(name, kernel_prime, 50,50);
-}*/
-
-/*//ex3
-cv::Mat convolution(cv::Mat k, cv::Mat u){
-  // width and height image
-    int w=u.cols;
-    int h=u.rows;
-
-    // width and height kernel
-    int wk=k.cols;
-    int hk=k.rows;
-
-    int rx=wk/2;
-    int ry=hk/2;
-
-    int nc = u.channels();
-
-    if(u.type()==CV_32FC1){
-
-    }else if(u.type()==CV_32FC3){
-
-    }else{
-        std::cout<<"unsupported matrix type"<<std::endl;
-        return u;
-    }
-
-    cv::Mat out(h,w,u.type());
-
-    // loop over all pixels
-    for (int x = 0; x < w; ++x)
-      {
-    for (int y = 0; y < h; ++y)
-      {
-        float val=0;
-        cv::Vec3f valVec(0,0,0);
-
-
-        // do convolution for every pixel
-        for (int i = 0; i < wk; ++i)
-          {
-        for (int j = 0; j < hk; ++j)
-          {
-            int y_index = y-j+ry;
-            int x_index = x-i+rx;
-
-            // check indices - do clamping if necessary
-            if (y_index < 0)
-              y_index = 0;
-            else if(y_index >= h)
-              y_index = h-1;
-
-            if (x_index < 0)
-              x_index = 0;
-            else if (x_index >= w)
-              x_index = w-1;
-
-            if(nc==1) val+=k.at<float>(j,i)*u.at<float>(y_index,x_index);
-            else valVec+=k.at<float>(j,i)*u.at<cv::Vec3f>(y_index,x_index);                     
-          }
-          }
-        if(nc==1) out.at<float>(y,x)=val;
-        else out.at<cv::Vec3f>(y,x)=valVec;
-      }
-      }
-    return out;
-}*/
-
 //                       in             out      out
-__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int w, int h, int nc, int k){
+__global__ void convolutionGPU(float *imgIn, float *imgKernel, float *imgOut, int w, int h, int nc, int k){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t x_block = threadIdx.x;
     size_t y_block = threadIdx.y;
-    
-
-    //oberste  linke pkt:  (blockidx.x)*blockdim.x-r, (blockidx.y)*blockdim.y-ry
-    //unterste rechte pkt: (blockidx.x+1)*blockdim.x+r, (blockidx.y+1)*blockdim.y+ry
-    //jeder thread im block kriegt: blockdim.x+2r/blockdim.x, blockdim.y+2ry/blockdim.y
 
     int r=k/2;
 
     //NOTE: BLOCK NICHT QUADRATISCH
-    int bw=blockDim.x+2*r;
-    int bh=blockDim.y+2*r;
-    int stepx=bw/blockDim.x+1;
-    int stepy=bh/blockDim.y+1;
+    int shw=blockDim.x+2*r;
+    int shh=blockDim.y+2*r;
+    int stepx=shw/blockDim.x+1;
+    int stepy=shh/blockDim.y+1;
 
     int2 topleft;
-    topleft.x=(blockIdx.x)*blockDim.x-r;
-    topleft.y=(blockIdx.y)*blockDim.y-r;
+    topleft.x=blockIdx.x*blockDim.x-r;
+    topleft.y=blockIdx.y*blockDim.y-r;
 
-    // int2 botright;
-    // botright.x=(blockIdx.x+1)*blockDim.x+r;
-    // botright.y=(blockIdx.y+1)*blockDim.y+ry;
-
-
-    
+    extern __shared__ float s_data[];
 
     for(unsigned int c=0;c<nc;c++) {
         //fill shared memory
-        extern __shared__ float s_data[];
         for(unsigned int i=0;i<stepx;i++){
             int i_new=topleft.x+x_block*stepx+i;
-            if(i_new<topleft.x) continue;
-            else if(i_new>=topleft.x+bw) continue;
+            // if(i_new<topleft.x) continue;
+            // else 
+            if(i_new>=topleft.x+shw) continue;
             else if(i_new<0) i_new=0;
             else if(i_new>=w) i_new=w-1;
 
             for(unsigned int j=0;j<stepy;j++){
                 int j_new=topleft.y+y_block*stepy+j;
-                if(j_new<topleft.y) continue;
-                else if(j_new>=topleft.y+bh) continue;
+                // if(j_new<topleft.y) continue;
+                // else 
+                if(j_new>=topleft.y+shh) continue;
                 else if(j_new<0) j_new=0;
                 else if(j_new>=h) j_new=h-1;
 
-                s_data[i+j*bw]=imgIn[i_new + w * j_new + h*w*c];
+                s_data[x_block*stepx+i+(y_block*stepy+j)*shw]=imgIn[i_new + w * j_new + h*w*c];
             }
         }
-
+        
         __syncthreads();
-        if(x>=w || y>=h) continue; //check for blocks
-/*        float sum=0;
+        
+        if(x>=w || y>=h) continue; 
+
+        //convolution
+        float sum=0;
+
         for(unsigned int i=0;i<k;i++){
-            unsigned int x_new=x_block+r;
-            // x_new=x+r;
-            // if(x+r<i) x_new=r;
-            // else if(x+r-i>=w) x_new=w+r-1;
-            // else x_new=x+r-i;
-            //shift for shared
-            if(x_new<i) x_new=0;
-            else if(x_new>=l+i) x_new=l-1;
-            else x_new-=i;
+            int x_new=x_block+k-i;
+            if(x_new>=shw) x_new=shw-1;
             for(unsigned int j=0;j<k;j++){
-                unsigned int y_new=y_block+r;
-                // y_new=y+r;
-                // if(y+r<j) y_new=r;
-                // else if(y+r-j>=h) y_new=h+r-1;
-                // else y_new=y+r-j;
-                //shift for shared
-                if(y_new<j) y_new=0;
-                else if(y_new>=l+j) y_new=l-1;
-                else y_new-=j;
-                // sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
-                // sum+=GK[i+j*k]*s_data[x_new+y_new*l];
+                int y_new=y_block+k-j;
+                if(y_new>=shh) y_new=shh-1;
+                sum+=imgKernel[i+j*k]*s_data[x_new+y_new*shw];
             }
-        }*/
-        // unsigned int x_new;
-        // x_new=x+r;
-        // if(x_new>=w) x_new=w-1;
-        // unsigned int y_new;
-        // y_new=y+r;
-        // if(y_new>=h) y_new=h-1;
-        // imgOut[x_new+w*y_new+w*h*c]=sum;
-        // if(sum>1 || sum<0) return;
-        imgOut[x+w*y+w*h*c]=s_data[(x_block+r)+(y_block+r)*bw];
+        }
+        imgOut[x+w*y+w*h*c]=sum;
+
+        // alt: output=input
+        // imgOut[x+w*y+w*h*c]=s_data[(x_block+r)+(y_block+r)*shw];
+
         __syncthreads();
     }
 }
@@ -376,7 +251,8 @@ int main(int argc, char **argv)
     // imagesc("Kernel", M);
     size_t r=ceil(3*sigma);
     size_t k=2*r+1;
-    float *GK=new float[k*k];
+    size_t k2=k*k;
+    float *GK=new float[k2];
     createKernel(sigma, GK, k);
 
     // show input image
@@ -399,22 +275,22 @@ int main(int argc, char **argv)
     // int k=M.cols;
     // int hk=k.rows;
 
-	float *d_imgIn, *d_imgOut;
+	float *d_imgIn, *d_imgOut, *d_imgKernel;
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-    // cudaMalloc(&d_imgKernel, n * sizeof(float) );CUDA_CHECK;
-    // cudaMemcpy(d_imgKernel, imgKernel, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgKernel, k*k * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, GK, k*k * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
     cudaMemset(d_imgOut, 0, n * sizeof(float)); CUDA_CHECK;
 
-	dim3 block = dim3(32,8,1);
+	dim3 block = dim3(32,1,1);
 	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
 
-	size_t smBytes = (block.x+r) * (block.y+r) * block.z * sizeof(float);
+	size_t smBytes = (block.x+r+r) * (block.y+r+r) * block.z * sizeof(float);
 
-    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, GK, d_imgOut, w, h, nc, k);CUDA_CHECK;
+    convolutionGPU <<<grid,block,smBytes>>> (d_imgIn, d_imgKernel, d_imgOut, w, h, nc, k);CUDA_CHECK;
 	cudaDeviceSynchronize();CUDA_CHECK;
 
 
@@ -422,6 +298,7 @@ int main(int argc, char **argv)
 
 	cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgOut);CUDA_CHECK;
+    cudaFree(d_imgKernel);CUDA_CHECK;
 
     convert_layered_to_mat(mOut, imgOut);
     showImage("Convolution GPU", mOut, 100+2*w+40, 100);
