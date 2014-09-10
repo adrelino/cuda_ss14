@@ -1,0 +1,16 @@
+1)
+nvcc --version gives us:
+
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2012 NVIDIA Corporation
+Built on Thu_May__9_18:45:33_PDT_2013
+Cuda compilation tools, release 5.5, V5.5.0
+
+2)
+(a) "GeForce 8800 GT", CUDA Capability Major/Minor version number:    1.1
+(b) (14) Multiprocessors, (  8) CUDA Cores/MP:     112 CUDA Cores
+(c) Total amount of global memory:                 511 MBytes (536150016 bytes)
+(d)
+    Total amount of shared memory per block:       16384 bytes
+    Total number of registers available per block: 8192
+
