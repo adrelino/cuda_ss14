@@ -26,7 +26,7 @@ using namespace std;
 //#define CAMERA
 
 //                       in             out      out
-__global__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+__device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -47,7 +47,7 @@ __global__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int n
 }
 
 //                         in        in         out
-__global__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
+__device__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -68,7 +68,7 @@ __global__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, in
 }
 
 //                     in           out
-__global__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
+__device__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -84,6 +84,20 @@ __global__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
     c=sqrtf(c);
 
     imgOut[x+ y*w]=c; //channel is 0 -> grayscale
+}
+
+__global__ void gpuEntry(float* d_imgIn, float* d_v1, float* d_v2, float* d_divergence, float* d_laplacian, int w, int h, int nc){
+    gradient (d_imgIn, d_v1, d_v2, w, h, nc);
+    divergence (d_v1, d_v2, d_divergence, w, h, nc);
+    l2norm (d_divergence, d_laplacian, w, h, nc);
+}
+
+float GetAverage(float dArray[], int iSize) {
+    float dSum = dArray[0];
+    for (int i = 1; i < iSize; ++i) {
+        dSum += dArray[i];
+    }
+    return dSum/iSize;
 }
 
 int main(int argc, char **argv)
@@ -223,45 +237,55 @@ int main(int argc, char **argv)
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered (imgIn, mIn);
 
+    float *tg, *tg2;
+    tg=(float*)malloc(repeats*sizeof(float));
+    tg2=(float*)malloc(repeats*sizeof(float));
+
 	//GPU:
-	
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_laplacian;
+	for(int i=0;i<repeats;i++){
+        Timer timergpu, timergpu2; 
+        timergpu.start();
 
-	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
-	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_laplacian;
 
-    cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
-	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
-    cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
+    	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
+    	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
 
-    cudaMalloc(&d_laplacian, n_OneChannel * sizeof(float)); CUDA_CHECK; //notice: only one channel
+        cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
+    	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
+        cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
 
+        cudaMalloc(&d_laplacian, n_OneChannel * sizeof(float)); CUDA_CHECK; //notice: only one channel
 
-	dim3 block = dim3(32,8,1);
-	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
+        timergpu2.start();
 
-    cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;
-	
-    gradient <<<grid,block>>> (d_imgIn, d_v1, d_v2, w, h, nc);CUDA_CHECK;
-	cudaDeviceSynchronize();CUDA_CHECK;
-    divergence<<<grid,block>>> (d_v1, d_v2, d_divergence, w, h, nc);CUDA_CHECK;
-    cudaDeviceSynchronize();CUDA_CHECK;
-    l2norm<<<grid,block>>> (d_divergence, d_laplacian, w, h, nc);CUDA_CHECK;
-    cudaDeviceSynchronize();CUDA_CHECK;
+    	dim3 block = dim3(32,8,1);
+    	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
+    	
+        gpuEntry<<<grid,block>>> (d_imgIn, d_v1, d_v2, d_divergence, d_laplacian, w, h, nc);CUDA_CHECK;
 
-	cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgOut2, d_v2, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgDivergence, d_divergence, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgLaplacian, d_laplacian, n_OneChannel * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+        timergpu2.end();
+        tg2[i] = timergpu2.get();
 
-	cudaFree(d_v1);CUDA_CHECK;
-    cudaFree(d_v2);CUDA_CHECK;
-    cudaFree(d_divergence);CUDA_CHECK;
-	cudaFree(d_imgIn);CUDA_CHECK;
-    cudaFree(d_laplacian);CUDA_CHECK;
+    	cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+        cudaMemcpy(imgOut2, d_v2, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+        cudaMemcpy(imgDivergence, d_divergence, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+        cudaMemcpy(imgLaplacian, d_laplacian, n_OneChannel * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
 
-	
+    	cudaFree(d_v1);CUDA_CHECK;
+        cudaFree(d_v2);CUDA_CHECK;
+        cudaFree(d_divergence);CUDA_CHECK;
+    	cudaFree(d_imgIn);CUDA_CHECK;
+        cudaFree(d_laplacian);CUDA_CHECK;
+
+        timergpu.end(); 
+        tg[i] = timergpu.get();
+
+    }
+
+    cout << "avg time gpu: " << GetAverage(tg, repeats)*1000 << " ms" << endl;
+    cout << "avg time gpu allocfree: " << GetAverage(tg2, repeats)*1000 << " ms" << endl;
 
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
