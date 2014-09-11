@@ -446,7 +446,9 @@ int main(int argc, char **argv)
 						d_imgM11, d_imgM12, d_imgM22,
 						alph, beta);
     CUDA_CHECK;
-      
+
+    cudaDeviceSynchronize(); CUDA_CHECK;
+    
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
