@@ -283,7 +283,7 @@ int main(int argc, char **argv)
     cudaMalloc(&d_imgOut, n * sizeof(float) ); CUDA_CHECK;
     cudaMemset(d_imgOut, 0, n * sizeof(float)); CUDA_CHECK;
 
-	dim3 block = dim3(32,1,1);
+	dim3 block = dim3(32,8,1);
 	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     cout <<"grids: "<< grid.x<< "x" <<grid.y<<endl;

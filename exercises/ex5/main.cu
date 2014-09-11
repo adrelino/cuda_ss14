@@ -264,7 +264,8 @@ int main(int argc, char **argv)
 
     	
         gpuEntry<<<grid,block>>> (d_imgIn, d_v1, d_v2, d_divergence, d_laplacian, w, h, nc);CUDA_CHECK;
-
+        cudaDeviceSynchronize();CUDA_CHECK;
+        
         timergpu2.end();
         tg2[i] = timergpu2.get();
 

@@ -56,41 +56,49 @@ cv::Mat kernel(float sigma){
     return kernel;
 }
 
-__device__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
+__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = kernel_size;
 
-    int rx=kernel_size/2;
-    int ry=kernel_size/2;
+    int r=k/2;
 
-    if(x>=w || y>=h) return; //check for blocks
+    //check for boundarys of the block
+    if(x>=w || y>=h) return; 
 
+    //iterate over all channels
     for(unsigned int c=0;c<numberChannels;c++) {
         float sum=0;
-        for(unsigned int i=0;i<kernel_size;i++){
+        //do convolution
+        for(unsigned int i=0;i<k;i++){
             unsigned int x_new;
-            if(x+rx<i) x_new=rx;
-            else if(x+rx-i>=w) x_new=w+rx-1;
-            else x_new=x+rx-i;
-            for(unsigned int j=0;j<kernel_size;j++){
+            //clamping x
+            if(x+r<i) x_new=0;
+            else if(x+r-i>=w) x_new=w-1;
+            else x_new=x+r-i;
+            for(unsigned int j=0;j<k;j++){
+                //clamping y
                 unsigned int y_new;
-                if(y+ry<j) y_new=0;
-                else if(y+ry-j>=h) y_new=h+ry-1;
-                else y_new=y+ry-j;
-                sum+=GK[i+j*kernel_size]*imgIn[x_new+y_new*w+w*h*c];
+                if(y+r<j)
+                    y_new=0;
+                else if(y+r-j>=h)
+                    y_new=h-1;
+                else
+                    y_new=y+r-j;
+                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
             }
         }
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
 
-__device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
+__global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
   // if outside of image --> return
-  if (x > w || y > h)
+  if (x >= w || y >= h)
     return;
 
   // calc indices
@@ -102,10 +110,10 @@ __device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
 
   // do clamping
   xPlus1 = max(min(xPlus1, w-1), 0);
-  xMinus1 = min(max(xMinus1, 0), w-2);
+  xMinus1 = min(max(xMinus1, 0), w-1);
 
   yPlus1 = max(min(yPlus1, h-1), 0);
-  yMinus1 = min(max(yMinus1, 0), h-2);
+  yMinus1 = min(max(yMinus1, 0), h-1);
   
   // calc derivatives
   for (int c = 0; c < nc; ++c) {
@@ -127,18 +135,17 @@ __device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
   }
 }
 
-__device__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
+__global__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-  if (x > w || y > h)
+  if (x >= w || y >= h)
     return;
 
   for(int c = 0; c < nc; ++c) {
-    // caution: only possible if arrays were memsetted to zero!
-    d_m11[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
-    d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-    d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
   }
 }
 
@@ -147,21 +154,33 @@ __global__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
 				    float *d_imgM11, float *d_imgM12, float *d_imgM22
 				    ) {
   // 1) smooth image
-  convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
-  __syncthreads();
+  // convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
+  // __syncthreads();
   
-  // 2) compute spatial derivatives
-  computeSpatialDerivatives(d_imgS, d_dx, d_dy);
-  __syncthreads();
+  // // 2) compute spatial derivatives
+  // computeSpatialDerivatives(d_imgS, d_dx, d_dy);
+  // __syncthreads();
   
-  // 3) create structure tensor
-  createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
-  __syncthreads();
+  // // 3) create structure tensor
+  // createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
+  // __syncthreads();
   
-  // 4) smooth structure tensor
-  convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
-  convolutionGPU(d_imgM12, d_GK, d_imgM12, 1);
-  convolutionGPU(d_imgM22, d_GK, d_imgM22, 1);  
+  // //4) smooth structure tensor
+  // convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
+  // __syncthreads();
+  
+  // convolutionGPU(d_imgM12, d_GK, d_imgM12, 1);
+  // __syncthreads();
+  
+  // convolutionGPU(d_imgM22, d_GK, d_imgM22, 1);
+  // __syncthreads();
+}
+
+void imagesc(std::string name, cv::Mat mat, int x, int y){
+    double min,max;
+    cv::minMaxLoc(mat,&min,&max);
+    cv::Mat kernel_prime = mat/max;
+    showImage(name, kernel_prime, x, y);
 }
 
 int main(int argc, char **argv)
@@ -344,6 +363,9 @@ int main(int argc, char **argv)
     cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
 
     // set data structure to zero
+    cudaMemset(d_imgS, 0, n * sizeof(float)); CUDA_CHECK;
+    cudaMemset(d_imgV1, 0, n * sizeof(float)); CUDA_CHECK;
+    cudaMemset(d_imgV2, 0, n * sizeof(float)); CUDA_CHECK;
     cudaMemset(d_imgM11, 0, sz_m); CUDA_CHECK;
     cudaMemset(d_imgM12, 0, sz_m); CUDA_CHECK;
     cudaMemset(d_imgM22, 0, sz_m); CUDA_CHECK;
@@ -358,12 +380,20 @@ int main(int argc, char **argv)
     dim3 block_size = dim3(32,4,1);
     dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
 
-    calcStructureTensor<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, d_imgV1, d_imgV2,
-			d_imgM11, d_imgM12, d_imgM22);
-    CUDA_CHECK;
-
+    convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
     cudaDeviceSynchronize(); CUDA_CHECK;
 
+    computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+
+    createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;    
+    
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
@@ -396,10 +426,10 @@ int main(int argc, char **argv)
 
     convert_layered_to_mat(mImgV1, imgV1);
     // normalize derivatives
-    showImage("x-Derivative", mImgV1, 100+2*w_h+40, 100);
+    imagesc("x-Derivative", mImgV1, 100+2*w_h+40, 100);
 
     convert_layered_to_mat(mImgV2, imgV2);
-    showImage("y-Derivative", mImgV2, 100+3*w_h+40, 100);
+    imagesc("y-Derivative", mImgV2, 100+3*w_h+40, 100);
 
     float scale_factor = 25.0f;
 
