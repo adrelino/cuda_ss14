@@ -45,7 +45,7 @@ __device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int n
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     int xPlus = x + 1;
     if(xPlus>=w) xPlus=w-1;
@@ -66,7 +66,7 @@ __device__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, in
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     int xMinus = x - 1;
     if(xMinus<0) xMinus=0;
@@ -87,7 +87,7 @@ __device__ void update(float tau, float *u_n, float *div, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     for (int i = 0; i < nc; ++i){
         u_n[x+ y*w +i*w*h]=u_n[x+ y*w +i*w*h]+tau*div[x+ y*w +i*w*h];
@@ -110,7 +110,7 @@ __host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, 
 __device__ void diffusivity(float* v1, float* v2, int w, int h, int nc, int functionType, float eps){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     //calculates the frobenius norm of 1*2 (gray) or 3*2 (color) matrices
     float s=0;
@@ -158,9 +158,6 @@ int main(int argc, char **argv)
     // We will do it right here, so that the run time measurements are accurate
     cudaDeviceSynchronize();  CUDA_CHECK;
 
-
-
-
     // Reading command line parameters:
     // getParam("param", var, argc, argv) looks whether "-param xyz" is specified, and if so stores the value "xyz" in "var"
     // If "-param" is not specified, the value of "var" remains unchanged
@@ -182,7 +179,6 @@ int main(int argc, char **argv)
     cout << "gray: " << gray << endl;
 
     // ### Define your own parameters here as needed
-
     //iteration steps on CPU 
     int N = 200;
     getParam("N", N, argc, argv);
@@ -207,7 +203,6 @@ int main(int argc, char **argv)
     float eps=0.001; //define eps
     getParam("eps", eps, argc, argv);
     cout << "eps: " << eps << endl;
-
 
     //check if tau is not too large;
     float g0;
@@ -251,9 +246,6 @@ int main(int argc, char **argv)
     int h = mIn.rows;         // height
     int nc = mIn.channels();  // number of channels
     cout << "image: " << w << " x " << h << " nc="<<nc <<endl;
-
-
-
 
     // Set the output image format
     // ###
@@ -405,9 +397,6 @@ int main(int argc, char **argv)
 #endif
 
     cout<<"exiting"<<endl;
-
-
-
 
     // save input and result
     //cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
