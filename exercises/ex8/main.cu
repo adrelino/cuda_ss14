@@ -387,10 +387,6 @@ int main(int argc, char **argv)
     createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
     cudaDeviceSynchronize(); CUDA_CHECK;
     
-    // calcStructureTensor<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, d_imgV1, d_imgV2,
-    //  			d_imgM11, d_imgM12, d_imgM22);
-    //  CUDA_CHECK;
-
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
