@@ -157,12 +157,15 @@ __device__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
 				    ) {
   // 1) smooth image
   convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
+  __syncthreads();
 
   // 2) compute spatial derivatives
   computeSpatialDerivatives(d_imgS, d_dx, d_dy);
+  __syncthreads();
 
   // 3) create structure tensor
   createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
+  __syncthreads();
   
   // 4) smooth structure tensor
   convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
@@ -217,6 +220,8 @@ __global__ void featureDetection(float *d_imgIn, float *d_GK, float *d_imgS, flo
   calcStructureTensor(d_imgIn, d_GK, d_imgS,
 		      d_dx, d_dy,
 		      d_m11, d_m12, d_m22);
+
+  __syncthreads();
 
   detectFeatures(d_imgS, d_imgOut,
 		 d_m11, d_m12, d_m22,
