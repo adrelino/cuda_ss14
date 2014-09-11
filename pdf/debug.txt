@@ -1,0 +1,1 @@
+cuda-memcheck main -i ~/cuda_ss14/images/gaudi.png -sigma 5 > cudamemcheck.txt
