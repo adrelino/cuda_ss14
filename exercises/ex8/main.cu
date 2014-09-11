@@ -32,6 +32,14 @@ __constant__ int h;
 __constant__ int nc;
 __constant__ int kernel_size;
 
+float GetAverage(float dArray[], int iSize) {
+    float dSum = dArray[0];
+    for (int i = 1; i < iSize; ++i) {
+        dSum += dArray[i];
+    }
+    return dSum/iSize;
+}
+
 cv::Mat kernel(float sigma){
     int r = ceil(3*sigma);
     float sigma2=powf(sigma,2);
@@ -147,33 +155,6 @@ __global__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, fl
       d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
       d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
   }
-}
-
-__global__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
-				    float *d_dx, float *d_dy,
-				    float *d_imgM11, float *d_imgM12, float *d_imgM22
-				    ) {
-  // 1) smooth image
-  // convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
-  // __syncthreads();
-  
-  // // 2) compute spatial derivatives
-  // computeSpatialDerivatives(d_imgS, d_dx, d_dy);
-  // __syncthreads();
-  
-  // // 3) create structure tensor
-  // createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
-  // __syncthreads();
-  
-  // //4) smooth structure tensor
-  // convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
-  // __syncthreads();
-  
-  // convolutionGPU(d_imgM12, d_GK, d_imgM12, 1);
-  // __syncthreads();
-  
-  // convolutionGPU(d_imgM22, d_GK, d_imgM22, 1);
-  // __syncthreads();
 }
 
 void imagesc(std::string name, cv::Mat mat, int x, int y){
@@ -344,80 +325,94 @@ int main(int argc, char **argv)
     float *d_imgIn, *d_imgKernel, *d_imgS, *d_imgV1, *d_imgV2;
     float *d_imgM11, *d_imgM12, *d_imgM22;
 
-    cudaMalloc(&d_imgIn, n * sizeof(float));
-    CUDA_CHECK;
+    float *times = new float[repeats];
 
-    cudaMalloc(&d_imgKernel, nr_pixels_kernel * sizeof(float));
-    CUDA_CHECK;
+    for (int i = 0; i < repeats; ++i) {
+      Timer timer;      
+      timer.start();    
+      cudaMalloc(&d_imgIn, n * sizeof(float));
+      CUDA_CHECK;
 
-    cudaMalloc(&d_imgS, n * sizeof(float)); CUDA_CHECK;
+      cudaMalloc(&d_imgKernel, nr_pixels_kernel * sizeof(float));
+      CUDA_CHECK;
 
-    cudaMalloc(&d_imgV1, n * sizeof(float)); CUDA_CHECK;
+      cudaMalloc(&d_imgS, n * sizeof(float)); CUDA_CHECK;
 
-    cudaMalloc(&d_imgV2, n * sizeof(float)); CUDA_CHECK;
+      cudaMalloc(&d_imgV1, n * sizeof(float)); CUDA_CHECK;
 
-    // allocate memory for structure tensor
-    const size_t sz_m = w_h * h_h * sizeof(float);
-    cudaMalloc(&d_imgM11, sz_m); CUDA_CHECK;
-    cudaMalloc(&d_imgM12, sz_m); CUDA_CHECK;
-    cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
+      cudaMalloc(&d_imgV2, n * sizeof(float)); CUDA_CHECK;
 
-    // set data structure to zero
-    cudaMemset(d_imgS, 0, n * sizeof(float)); CUDA_CHECK;
-    cudaMemset(d_imgV1, 0, n * sizeof(float)); CUDA_CHECK;
-    cudaMemset(d_imgV2, 0, n * sizeof(float)); CUDA_CHECK;
-    cudaMemset(d_imgM11, 0, sz_m); CUDA_CHECK;
-    cudaMemset(d_imgM12, 0, sz_m); CUDA_CHECK;
-    cudaMemset(d_imgM22, 0, sz_m); CUDA_CHECK;
+      // allocate memory for structure tensor
+      const size_t sz_m = w_h * h_h * sizeof(float);
+      cudaMalloc(&d_imgM11, sz_m); CUDA_CHECK;
+      cudaMalloc(&d_imgM12, sz_m); CUDA_CHECK;
+      cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
 
-    cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);
-    CUDA_CHECK;
+      // set data structure to zero
+      cudaMemset(d_imgS, 0, n * sizeof(float)); CUDA_CHECK;
+      cudaMemset(d_imgV1, 0, n * sizeof(float)); CUDA_CHECK;
+      cudaMemset(d_imgV2, 0, n * sizeof(float)); CUDA_CHECK;
+      cudaMemset(d_imgM11, 0, sz_m); CUDA_CHECK;
+      cudaMemset(d_imgM12, 0, sz_m); CUDA_CHECK;
+      cudaMemset(d_imgM22, 0, sz_m); CUDA_CHECK;
 
-    cudaMemcpy(d_imgKernel, imgKernel, nr_pixels_kernel * sizeof(float), cudaMemcpyHostToDevice);
-    CUDA_CHECK;
+      cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);
+      CUDA_CHECK;
 
-    // prepare grid
-    dim3 block_size = dim3(32,4,1);
-    dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
+      cudaMemcpy(d_imgKernel, imgKernel, nr_pixels_kernel * sizeof(float), cudaMemcpyHostToDevice);
+      CUDA_CHECK;
 
-    convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      // prepare grid
+      dim3 block_size = dim3(32,4,1);
+      dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
 
-    computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
 
-    createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      
+      convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
 
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;    
+      computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      timer.end();
+      times[i] = timer.get();
     
-    // get smoothed image back
-    cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      // get smoothed image back
+      cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
-    // get derivatives back
-    cudaMemcpy(imgV1, d_imgV1, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgV2, d_imgV2, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      // get derivatives back
+      cudaMemcpy(imgV1, d_imgV1, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgV2, d_imgV2, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
-    // copy m11, m12, m22 back
-    cudaMemcpy(imgM11, d_imgM11, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM12, d_imgM12, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM22, d_imgM22, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      // copy m11, m12, m22 back
+      cudaMemcpy(imgM11, d_imgM11, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgM12, d_imgM12, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgM22, d_imgM22, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
-    // free stuff
-    cudaFree(d_imgIn); CUDA_CHECK;
-    cudaFree(d_imgS); CUDA_CHECK;
-    cudaFree(d_imgKernel); CUDA_CHECK;
+      // free stuff
+      cudaFree(d_imgIn); CUDA_CHECK;
+      cudaFree(d_imgS); CUDA_CHECK;
+      cudaFree(d_imgKernel); CUDA_CHECK;
 
-    cudaFree(d_imgV1); CUDA_CHECK;
-    cudaFree(d_imgV2); CUDA_CHECK;
+      cudaFree(d_imgV1); CUDA_CHECK;
+      cudaFree(d_imgV2); CUDA_CHECK;
 
-    cudaFree(d_imgM11); CUDA_CHECK;
-    cudaFree(d_imgM12); CUDA_CHECK;
-    cudaFree(d_imgM22); CUDA_CHECK;
+      cudaFree(d_imgM11); CUDA_CHECK;
+      cudaFree(d_imgM12); CUDA_CHECK;
+      cudaFree(d_imgM22); CUDA_CHECK;
+    }
 
+    cout << "avg time: " << GetAverage(times, repeats)*1000 << " ms" << endl;    
+    delete[] times;
+    
     // show input imagew
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 

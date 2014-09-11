@@ -381,47 +381,48 @@ int main(int argc, char **argv)
     float *d_imgM11, *d_imgM12, *d_imgM22;
     float *d_imgFeatureMap;
 
-    cudaMalloc(&d_imgIn, n * sizeof(float));
-    CUDA_CHECK;
-
-    cudaMalloc(&d_imgKernel, nr_pixels_kernel * sizeof(float));
-    CUDA_CHECK;
-
-    cudaMalloc(&d_imgS, n * sizeof(float)); CUDA_CHECK;
-
-    cudaMalloc(&d_imgV1, n * sizeof(float)); CUDA_CHECK;
-
-    cudaMalloc(&d_imgV2, n * sizeof(float)); CUDA_CHECK;
-
-    // allocate memory for structure tensor
-    const size_t sz_m = w_h * h_h * sizeof(float);
-    cudaMalloc(&d_imgM11, sz_m); CUDA_CHECK;
-    cudaMalloc(&d_imgM12, sz_m); CUDA_CHECK;
-    cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
-
-    // set data structure to zero
-    cudaMemset(d_imgM11, 0, sz_m); CUDA_CHECK;
-    cudaMemset(d_imgM12, 0, sz_m); CUDA_CHECK;
-    cudaMemset(d_imgM22, 0, sz_m); CUDA_CHECK;
-
-    // allocate memory for feature map
-    cudaMalloc(&d_imgFeatureMap, w_h * h_h * 3 * sizeof(float)); CUDA_CHECK;
-
-    cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);
-    CUDA_CHECK;
-
-    cudaMemcpy(d_imgKernel, imgKernel, nr_pixels_kernel * sizeof(float), cudaMemcpyHostToDevice);
-    CUDA_CHECK;
-
-    // prepare grid
-    dim3 block_size = dim3(32,4,1);
-    dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
-
-
     float *times = new float[repeats];
     Timer timer;
     for (int i=0; i < repeats; ++i) {      
-      timer.start();
+      timer.start();    
+      cudaMalloc(&d_imgIn, n * sizeof(float));
+      CUDA_CHECK;
+
+      cudaMalloc(&d_imgKernel, nr_pixels_kernel * sizeof(float));
+      CUDA_CHECK;
+
+      cudaMalloc(&d_imgS, n * sizeof(float)); CUDA_CHECK;
+
+      cudaMalloc(&d_imgV1, n * sizeof(float)); CUDA_CHECK;
+
+      cudaMalloc(&d_imgV2, n * sizeof(float)); CUDA_CHECK;
+
+      // allocate memory for structure tensor
+      const size_t sz_m = w_h * h_h * sizeof(float);
+      cudaMalloc(&d_imgM11, sz_m); CUDA_CHECK;
+      cudaMalloc(&d_imgM12, sz_m); CUDA_CHECK;
+      cudaMalloc(&d_imgM22, sz_m); CUDA_CHECK;
+
+      // set data structure to zero
+      cudaMemset(d_imgM11, 0, sz_m); CUDA_CHECK;
+      cudaMemset(d_imgM12, 0, sz_m); CUDA_CHECK;
+      cudaMemset(d_imgM22, 0, sz_m); CUDA_CHECK;
+
+      // allocate memory for feature map
+      cudaMalloc(&d_imgFeatureMap, w_h * h_h * 3 * sizeof(float)); CUDA_CHECK;
+
+      cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);
+      CUDA_CHECK;
+
+      cudaMemcpy(d_imgKernel, imgKernel, nr_pixels_kernel * sizeof(float), cudaMemcpyHostToDevice);
+      CUDA_CHECK;
+
+      // prepare grid
+      dim3 block_size = dim3(32,4,1);
+      dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
+
+
+
       convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
       cudaDeviceSynchronize(); CUDA_CHECK;
 
@@ -443,38 +444,39 @@ int main(int argc, char **argv)
       cudaDeviceSynchronize(); CUDA_CHECK;
       timer.end();
       times[i] = timer.get();
+
+    
+      // get smoothed image back
+      cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      // get derivatives back
+      cudaMemcpy(imgV1, d_imgV1, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgV2, d_imgV2, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      // copy m11, m12, m22 back
+      cudaMemcpy(imgM11, d_imgM11, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgM12, d_imgM12, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgM22, d_imgM22, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      // copy feature map
+      cudaMemcpy(imgFeatureMap, d_imgFeatureMap, w_h*h_h*3*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      // free stuff
+      cudaFree(d_imgIn); CUDA_CHECK;
+      cudaFree(d_imgS); CUDA_CHECK;
+      cudaFree(d_imgKernel); CUDA_CHECK;
+
+      cudaFree(d_imgV1); CUDA_CHECK;
+      cudaFree(d_imgV2); CUDA_CHECK;
+
+      cudaFree(d_imgM11); CUDA_CHECK;
+      cudaFree(d_imgM12); CUDA_CHECK;
+      cudaFree(d_imgM22); CUDA_CHECK;
+
+      cudaFree(d_imgFeatureMap); CUDA_CHECK;
     }
     cout << "avg time: " << GetAverage(times, repeats)*1000 << " ms" << endl;
-    delete[] times;    
-    
-    // get smoothed image back
-    cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-
-    // get derivatives back
-    cudaMemcpy(imgV1, d_imgV1, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgV2, d_imgV2, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-
-    // copy m11, m12, m22 back
-    cudaMemcpy(imgM11, d_imgM11, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM12, d_imgM12, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-    cudaMemcpy(imgM22, d_imgM22, w_h*h_h*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-
-    // copy feature map
-    cudaMemcpy(imgFeatureMap, d_imgFeatureMap, w_h*h_h*3*sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-
-    // free stuff
-    cudaFree(d_imgIn); CUDA_CHECK;
-    cudaFree(d_imgS); CUDA_CHECK;
-    cudaFree(d_imgKernel); CUDA_CHECK;
-
-    cudaFree(d_imgV1); CUDA_CHECK;
-    cudaFree(d_imgV2); CUDA_CHECK;
-
-    cudaFree(d_imgM11); CUDA_CHECK;
-    cudaFree(d_imgM12); CUDA_CHECK;
-    cudaFree(d_imgM22); CUDA_CHECK;
-
-    cudaFree(d_imgFeatureMap); CUDA_CHECK;
+    delete[] times;        
 
     // show input imagew
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
