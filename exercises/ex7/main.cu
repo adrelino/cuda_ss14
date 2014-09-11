@@ -179,9 +179,9 @@ __global__ void convolutionShared(float *imgIn, float *imgOut, Params params){
 }
 
 __global__ void convolutionTexture(float *imgOut, Params params) {
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    size_t k = kernelSize;
+    int  x = threadIdx.x + blockDim.x * blockIdx.x;
+    int  y = threadIdx.y + blockDim.y * blockIdx.y;
+    int  k = kernelSize;
 
     int h=params.h;
     int w=params.w;
