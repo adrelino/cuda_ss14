@@ -57,7 +57,7 @@ cv::Mat kernel(float sigma){
     return kernel;
 }
 
-__device__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
+__global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -85,13 +85,13 @@ __device__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numbe
     }
 }
 
-__device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
+__global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
   // if outside of image --> return
-  if (x > w || y > h)
+  if (x >= w || y >= h)
     return;
 
   // calc indices
@@ -128,11 +128,11 @@ __device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
   }
 }
 
-__device__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
+__global__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-  if (x > w || y > h)
+  if (x >= w || y >= h)
     return;
 
   for(int c = 0; c < nc; ++c) {
@@ -151,36 +151,14 @@ __device__ void compute_eigenvalues2x2(float a, float b, float c, float d, float
   *lambda2 = (trace - sqrt_term) / 2.0f;  
 }
 
-__device__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
-				    float *d_dx, float *d_dy,
-				    float *d_imgM11, float *d_imgM12, float *d_imgM22
-				    ) {
-  // 1) smooth image
-  convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
-  __syncthreads();
-
-  // 2) compute spatial derivatives
-  computeSpatialDerivatives(d_imgS, d_dx, d_dy);
-  __syncthreads();
-
-  // 3) create structure tensor
-  createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
-  __syncthreads();
-  
-  // 4) smooth structure tensor
-  convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
-  convolutionGPU(d_imgM12, d_GK, d_imgM12, 1);
-  convolutionGPU(d_imgM22, d_GK, d_imgM22, 1);  
-}
-
-__device__ void detectFeatures(float *d_imgIn, float *d_imgOut,
+__global__ void detectFeatures(float *d_imgIn, float *d_imgOut,
 				  float *d_m11, float *d_m12, float *d_m22,
 				  float alph, float beta) {
   
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-  if (x > w || y > h)
+  if (x >= w || y >= h)
     return;
 
   float lambda1, lambda2;
@@ -206,26 +184,10 @@ __device__ void detectFeatures(float *d_imgIn, float *d_imgOut,
     d_imgOut[x + y * w + 2*w*h] = 0.0f;
   }
   else {
-    // TODO: make this more general and dependent of nc
     d_imgOut[x + y * w] = d_imgIn[x + y *w] * 0.5f;
     d_imgOut[x + y * w + 1*w*h] = d_imgIn[x + y *w + 1*w*h] * 0.5f;
     d_imgOut[x + y * w + 2*w*h] = d_imgIn[x + y *w + 2*w*h] * 0.5f;
   }
-}
-
-__global__ void featureDetection(float *d_imgIn, float *d_GK, float *d_imgS, float *d_imgOut,
-				  float *d_dx, float *d_dy,
-				  float *d_m11, float *d_m12, float *d_m22,
-				  float alph, float beta) {
-  calcStructureTensor(d_imgIn, d_GK, d_imgS,
-		      d_dx, d_dy,
-		      d_m11, d_m12, d_m22);
-
-  __syncthreads();
-
-  detectFeatures(d_imgS, d_imgOut,
-		 d_m11, d_m12, d_m22,
-		 alph, beta);
 }
 
 int main(int argc, char **argv)
@@ -441,12 +403,19 @@ int main(int argc, char **argv)
     dim3 block_size = dim3(32,4,1);
     dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
 
-    featureDetection<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, d_imgFeatureMap,
-						d_imgV1, d_imgV2,
-						d_imgM11, d_imgM12, d_imgM22,
-						alph, beta);
-    CUDA_CHECK;
+    convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
 
+    computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+
+    createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;
+
+    detectFeatures<<<grid_size, block_size>>>(d_imgS, d_imgFeatureMap,
+					      d_imgM11, d_imgM12, d_imgM22,
+					      alph, beta); CUDA_CHECK;
+    CUDA_CHECK;
     cudaDeviceSynchronize(); CUDA_CHECK;
     
     // get smoothed image back
