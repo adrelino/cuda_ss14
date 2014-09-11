@@ -25,13 +25,21 @@
 using namespace std;
 
 // uncomment to use the camera
-//#define CAMERA
+// #define CAMERA
 
 // variables which reside in constant memory on GPU
 __constant__ int w;
 __constant__ int h;
 __constant__ int nc;
 __constant__ int kernel_size;
+
+float GetAverage(float dArray[], int iSize) {
+    float dSum = dArray[0];
+    for (int i = 1; i < iSize; ++i) {
+        dSum += dArray[i];
+    }
+    return dSum/iSize;
+}
 
 cv::Mat kernel(float sigma){
     int r = ceil(3*sigma);
@@ -409,25 +417,35 @@ int main(int argc, char **argv)
     dim3 block_size = dim3(32,4,1);
     dim3 grid_size = dim3((w_h + block_size.x - 1 ) / block_size.x,(h_h + block_size.y - 1 ) / block_size.y, 1);
 
-    convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
 
-    computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+    float *times = new float[repeats];
+    Timer timer;
+    for (int i=0; i < repeats; ++i) {      
+      timer.start();
+      convolutionGPU<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, nc_h); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
 
-    createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      computeSpatialDerivatives<<<grid_size, block_size>>>(d_imgS, d_imgV1, d_imgV2); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
 
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
-    convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
+      convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
     
-    detectFeatures<<<grid_size, block_size>>>(d_imgS, d_imgFeatureMap,
-					      d_imgM11, d_imgM12, d_imgM22,
-					      alph, beta); CUDA_CHECK;
-    CUDA_CHECK;
-    cudaDeviceSynchronize(); CUDA_CHECK;
+      detectFeatures<<<grid_size, block_size>>>(d_imgS, d_imgFeatureMap,
+						d_imgM11, d_imgM12, d_imgM22,
+						alph, beta); CUDA_CHECK;
+      CUDA_CHECK;
+      cudaDeviceSynchronize(); CUDA_CHECK;
+      timer.end();
+      times[i] = timer.get();
+    }
+    cout << "avg time: " << GetAverage(times, repeats)*1000 << " ms" << endl;
+    delete[] times;    
     
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;

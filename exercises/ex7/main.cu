@@ -28,7 +28,7 @@
 using namespace std;
 
 // uncomment to use the camera
-//#define CAMERA
+// #define CAMERA
 
 typedef struct Params {
     int shw;
@@ -314,7 +314,8 @@ int main(int argc, char **argv)
     float *imgShared = new float[n];
     float *imgGlobal = new float[n];
     float *imgTexture = new float[n];
-
+    float *imgKernel  = new float[KERNEL_SIZE*KERNEL_SIZE];
+    
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
     // Read a camera image frame every 30 milliseconds:
@@ -339,7 +340,6 @@ int main(int argc, char **argv)
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered(imgIn, mIn);
 
-    float *imgKernel  = new float[KERNEL_SIZE*KERNEL_SIZE];
     cv::Mat mKernel = createKernel(sigma);
     convert_mat_to_layered(imgKernel,mKernel);
 
