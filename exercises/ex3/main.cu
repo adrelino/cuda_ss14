@@ -82,9 +82,9 @@ int main(int argc, char **argv)
     cout << "gray: " << gray << endl;
 
     // ### Define your own parameters here as needed    
-
-
-
+    float gamma=0.5f;
+    getParam("gamma", gamma, argc, argv);
+    cout << "gamma: " << gamma << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -181,7 +181,6 @@ int main(int argc, char **argv)
     tc=(float*)malloc(repeats*sizeof(float));
     tg=(float*)malloc(repeats*sizeof(float));
     tg2=(float*)malloc(repeats*sizeof(float));
-    float gamma=0.5f;
     
     for(int i=0;i<repeats;i++){
 	//CPU:
