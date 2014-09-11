@@ -148,12 +148,15 @@ __global__ void calcStructureTensor(float *d_imgIn, float *d_GK, float *d_imgS,
 				    ) {
   // 1) smooth image
   convolutionGPU(d_imgIn, d_GK, d_imgS, nc);
-
+  __syncthreads();
+  
   // 2) compute spatial derivatives
   computeSpatialDerivatives(d_imgS, d_dx, d_dy);
-
+  __syncthreads();
+  
   // 3) create structure tensor
   createStructureTensor(d_dx, d_dy, d_imgM11, d_imgM12, d_imgM22);
+  __syncthreads();
   
   // 4) smooth structure tensor
   convolutionGPU(d_imgM11, d_GK, d_imgM11, 1);
@@ -358,7 +361,9 @@ int main(int argc, char **argv)
     calcStructureTensor<<<grid_size, block_size>>>(d_imgIn, d_imgKernel, d_imgS, d_imgV1, d_imgV2,
 			d_imgM11, d_imgM12, d_imgM22);
     CUDA_CHECK;
-    
+
+    cudaDeviceSynchronize(); CUDA_CHECK;
+
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
