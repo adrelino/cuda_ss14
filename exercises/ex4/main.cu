@@ -26,46 +26,41 @@ using namespace std;
 __device__ void img_thresholding(float *d_imgIn, float *d_imgOut, size_t w, size_t h, size_t nc, float thresh) {
   
   // get the pixel id
-  int pxid = threadIdx.x + blockDim.x * blockIdx.x;
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdx.y + blockDim.y * blockIdx.y;
+  
   size_t nr_pixels = w * h;
 
-  if (pxid < nr_pixels) {
-    float val = d_imgIn[pxid] / nc;
+  if (x > w-1 || y > h-1)
+    return;
 
-    if (val >= thresh) {
-      // red channel
-      d_imgOut[pxid + (0 * nr_pixels)] = 1.0f;
-      // green channel
-      d_imgOut[pxid + (1 * nr_pixels)] = 0.0f;
-      // blue channel
-      d_imgOut[pxid + (2 * nr_pixels)] = 0.0f;    
-    }
-    else {
-      // red channel
-      d_imgOut[pxid + (0 * nr_pixels)] = 0.0f;
-      // green channel
-      d_imgOut[pxid + (1 * nr_pixels)] = 0.3f;
-      // blue channel
-      d_imgOut[pxid + (2 * nr_pixels)] = 0.7f;        
-    }
-  }    
-}
+  int pxid = x + y*w;
+  float val = 0.0f;
+    
+  for(int i=0; i < nc; ++i)
+    val += d_imgIn[pxid + i * nr_pixels];
 
-__device__ void add_layers(float *d_imgIn, float *d_imgOut, size_t w, size_t h, size_t c) {
-  // get the pixel id
-  int pxid = threadIdx.x + blockDim.x * blockIdx.x;
-  size_t nr_pixels = w * h;
-
-  if (pxid < nr_pixels)
-    d_imgOut[pxid] += d_imgIn[pxid + (c * nr_pixels)];
+  val /= nc;
+    
+  if (val >= thresh) {
+    // red channel
+    d_imgOut[pxid + (0 * nr_pixels)] = 1.0f;
+    // green channel
+    d_imgOut[pxid + (1 * nr_pixels)] = 0.0f;
+    // blue channel
+    d_imgOut[pxid + (2 * nr_pixels)] = 0.0f;    
+  }
+  else {
+    // red channel
+    d_imgOut[pxid + (0 * nr_pixels)] = 0.0f;
+    // green channel
+    d_imgOut[pxid + (1 * nr_pixels)] = 0.3f;
+    // blue channel
+    d_imgOut[pxid + (2 * nr_pixels)] = 0.7f;        
+  }
 }
 
 __global__ void kernel_call(float *d_imgIn, float *d_imgOut, size_t w, size_t h, size_t nc, float thresh) {
-  // sum all layers together
-  for (size_t c = 0; c < nc; ++c)
-    add_layers(d_imgIn, d_imgOut, w, h, c);
-
-  // do the thresholding
   img_thresholding(d_imgIn, d_imgOut, w, h, nc, thresh);
 }
 
@@ -225,11 +220,10 @@ int main(int argc, char **argv)
       CUDA_CHECK;
 
       timer_gpu_only.start();
-      size_t nr_pixels = (size_t)w * h;
 
       // compute the appropiate dimensions for the grid/block
-      dim3 block_size = dim3(128, 1, 1);
-      dim3 grid_size = dim3((nr_pixels + block_size.x - 1) / block_size.x, 1, 1);
+      dim3 block_size = dim3(32, 4, 1);
+      dim3 grid_size = dim3((w + block_size.x - 1) / block_size.x, (h + block_size.y - 1) / block_size.y, 1);
     
       kernel_call<<<grid_size, block_size>>>(d_imgIn, d_imgOut, w, h, nc, thresh);
       CUDA_CHECK;
