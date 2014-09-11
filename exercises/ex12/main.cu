@@ -25,7 +25,7 @@
 using namespace std;
 
 // uncomment to use the camera
-#define CAMERA
+//#define CAMERA
 
 void gammaCPU(float *imgIn, float *imgOut, size_t n, float gamma){
     for(size_t i=0;i<n;i++){
@@ -33,9 +33,15 @@ void gammaCPU(float *imgIn, float *imgOut, size_t n, float gamma){
     }
 }
 
-__global__ void gammaGPU(float *imgIn, float *imgOut, size_t n, float gamma){
-    size_t ind = threadIdx.x + blockDim.x * blockIdx.x;
-    if (ind<n) imgOut[ind]=powf(imgIn[ind],gamma);
+__global__ void gammaGPU(float *imgIn, float *imgOut, size_t pw, size_t h, size_t nc, float gamma){
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int y = threadIdx.y + blockDim.y * blockIdx.y;
+
+    if (x>=pw || y>=h) return;
+
+    for(int c=0; c<nc; c++){
+        imgOut[x+y*pw+c*h*pw]=powf(imgIn[x+y*pw+c*h*pw],gamma);
+    }
 }
 
 float GetAverage(float dArray[], int iSize) {
@@ -178,58 +184,53 @@ int main(int argc, char **argv)
 
     
     float *tc, *tg, *tg2;
-    tc=(float*)malloc(repeats*sizeof(float));
-    tg=(float*)malloc(repeats*sizeof(float));
-    tg2=(float*)malloc(repeats*sizeof(float));
+    tc=(float*)malloc(repeats * sizeof(float));
+    tg=(float*)malloc(repeats * sizeof(float));
+    tg2=(float*)malloc(repeats * sizeof(float));
     
     for(int i=0;i<repeats;i++){
-	//CPU:
-	Timer timercpu, timergpu, timergpu2; timercpu.start();
-	
-	gammaCPU(imgIn,imgOut,n,gamma);
-	
-	timercpu.end();  
-	tc[i] = timercpu.get();  // elapsed time in seconds
+    	//CPU:
+    	Timer timercpu, timergpu, timergpu2; timercpu.start();
+    	
+    	gammaCPU(imgIn,imgOut,n,gamma);
+    	
+    	timercpu.end();  
+    	tc[i] = timercpu.get();  // elapsed time in seconds
 
-	//GPU:
-	timergpu.start();
-	
-	float *d_imgIn, *d_imgOut;
-	cudaMalloc(&d_imgIn, n * sizeof(float) );
-	CUDA_CHECK;
-	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);
-	CUDA_CHECK;
-	cudaMalloc(&d_imgOut, n * sizeof(float) );
-	CUDA_CHECK;
-	
-	timergpu2.start();
-	//min @ 128,1,1:
-	//./main -i ~/cuda_ss14/images/bird.png -repeats 1000
-	//avg time cpu: 9.95011 ms
-	//avg time gpu: 3.63 ms
-	//avg time gpu allocfree: 0.38 ms
+    	//GPU:
+    	timergpu.start();
+    	
+    	float *d_imgIn, *d_imgOut;
+        size_t pitch, pitch2;
+    	cudaMallocPitch(&d_imgIn, &pitch, w * sizeof(float), h*nc);
+    	CUDA_CHECK;
+    	cudaMemcpy2D(d_imgIn, pitch, imgIn, w * sizeof(float), w * sizeof(float), h*nc, cudaMemcpyHostToDevice);
+    	CUDA_CHECK;
+    	cudaMallocPitch(&d_imgOut, &pitch2, w * sizeof(float), h*nc);
+    	CUDA_CHECK;
+        size_t pw=pitch / sizeof(float);
+    	
+    	timergpu2.start();
 
-
-
-	dim3 block = dim3(128,1,1);
-	dim3 grid = dim3((n + block.x - 1 ) / block.x, 1, 1);
-	gammaGPU <<<grid,block>>> (d_imgIn, d_imgOut, n, gamma);
-	CUDA_CHECK;
-	cudaDeviceSynchronize();
-	
-	timergpu2.end();
-	tg2[i] = timergpu2.get();
-	
-	CUDA_CHECK;
-	cudaMemcpy(imgOut, d_imgOut, n * sizeof(float), cudaMemcpyDeviceToHost);
-	CUDA_CHECK;
-	cudaFree(d_imgOut);
-	CUDA_CHECK;
-	cudaFree(d_imgIn);
-	CUDA_CHECK;
-	
-	timergpu.end();  
-	tg[i] = timergpu.get();  // elapsed time in seconds
+    	dim3 block = dim3(32,4,1);
+    	dim3 grid = dim3((w + block.x - 1 ) / block.x, (h + block.y - 1 ) / block.y, 1);
+    	gammaGPU <<<grid,block>>> (d_imgIn, d_imgOut, pw, h, nc, gamma);
+    	CUDA_CHECK;
+    	cudaDeviceSynchronize();
+    	
+    	timergpu2.end();
+    	tg2[i] = timergpu2.get();
+    	
+    	CUDA_CHECK;
+    	cudaMemcpy2D(imgOut, w * sizeof(float), d_imgOut, pitch, w * sizeof(float), h*nc, cudaMemcpyDeviceToHost);
+    	CUDA_CHECK;
+    	cudaFree(d_imgOut);
+    	CUDA_CHECK;
+    	cudaFree(d_imgIn);
+    	CUDA_CHECK;
+    	
+    	timergpu.end();  
+    	tg[i] = timergpu.get();  // elapsed time in seconds
     }
     
     cout << "avg time cpu: " << GetAverage(tc, repeats)*1000 << " ms" << endl;
