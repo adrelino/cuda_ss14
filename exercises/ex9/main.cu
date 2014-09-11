@@ -25,7 +25,7 @@
 using namespace std;
 
 // uncomment to use the camera
-// #define CAMERA
+//#define CAMERA
 
 // variables which reside in constant memory on GPU
 __constant__ int w;
@@ -340,6 +340,20 @@ int main(int argc, char **argv)
 
     float *imgFeatureMap = new float[(size_t)w_h*h_h*3];
 
+    // create kernel for smoothing
+    cv::Mat k = kernel(sigma);
+    int wk = k.cols;
+    int hk = k.rows;
+
+    // we are assuming symmetric kernels
+    assert(wk == hk);
+    cudaMemcpyToSymbol(kernel_size, &wk, sizeof(int), 0, cudaMemcpyHostToDevice);
+
+    size_t nr_pixels_kernel = wk * hk;
+
+    float *imgKernel = new float[nr_pixels_kernel];
+    convert_mat_to_layered(imgKernel, k);
+
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
     // Read a camera image frame every 30 milliseconds:
@@ -360,20 +374,6 @@ int main(int argc, char **argv)
     // But for CUDA it's better to work with layered images: rrr... ggg... bbb...
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered (imgIn, mIn);
-
-    // create kernel for smoothing
-    cv::Mat k = kernel(sigma);
-    int wk = k.cols;
-    int hk = k.rows;
-
-    // we are assuming symmetric kernels
-    assert(wk == hk);
-    cudaMemcpyToSymbol(kernel_size, &wk, sizeof(int), 0, cudaMemcpyHostToDevice);
-
-    size_t nr_pixels_kernel = wk * hk;
-
-    float *imgKernel = new float[nr_pixels_kernel];
-    convert_mat_to_layered(imgKernel, k);
 
     // GPU computation
     // transfer data to GPU
