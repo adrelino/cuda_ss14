@@ -59,25 +59,33 @@ cv::Mat kernel(float sigma){
 __global__ void convolutionGPU(float *imgIn, float *GK, float *imgOut, int numberChannels){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = kernel_size;
 
-    int rx=kernel_size/2;
-    int ry=kernel_size/2;
+    int r=k/2;
 
-    if(x>=w || y>=h) return; //check for blocks
+    //check for boundarys of the block
+    if(x>=w || y>=h) return; 
 
+    //iterate over all channels
     for(unsigned int c=0;c<numberChannels;c++) {
         float sum=0;
-        for(unsigned int i=0;i<kernel_size;i++){
+        //do convolution
+        for(unsigned int i=0;i<k;i++){
             unsigned int x_new;
-            if(x+rx<i) x_new=rx;
-            else if(x+rx-i>=w) x_new=w+rx-1;
-            else x_new=x+rx-i;
-            for(unsigned int j=0;j<kernel_size;j++){
+            //clamping x
+            if(x+r<i) x_new=0;
+            else if(x+r-i>=w) x_new=w-1;
+            else x_new=x+r-i;
+            for(unsigned int j=0;j<k;j++){
+                //clamping y
                 unsigned int y_new;
-                if(y+ry<j) y_new=0;
-                else if(y+ry-j>=h) y_new=h+ry-1;
-                else y_new=y+ry-j;
-                sum+=GK[i+j*kernel_size]*imgIn[x_new+y_new*w+w*h*c];
+                if(y+r<j)
+                    y_new=0;
+                else if(y+r-j>=h)
+                    y_new=h-1;
+                else
+                    y_new=y+r-j;
+                sum+=GK[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
             }
         }
         imgOut[x+w*y+w*h*c]=sum;
@@ -102,10 +110,10 @@ __global__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
 
   // do clamping
   xPlus1 = max(min(xPlus1, w-1), 0);
-  xMinus1 = min(max(xMinus1, 0), w-2);
+  xMinus1 = min(max(xMinus1, 0), w-1);
 
   yPlus1 = max(min(yPlus1, h-1), 0);
-  yMinus1 = min(max(yMinus1, 0), h-2);
+  yMinus1 = min(max(yMinus1, 0), h-1);
   
   // calc derivatives
   for (int c = 0; c < nc; ++c) {
@@ -135,15 +143,9 @@ __global__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, fl
     return;
 
   for(int c = 0; c < nc; ++c) {
-    if (c == 0) {
-      d_m11[x + y * w] = d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
-      d_m12[x + y * w] = d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-      d_m22[x + y * w] = d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-    } else {
       d_m11[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
       d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-    }
   }
 }
 
@@ -386,6 +388,11 @@ int main(int argc, char **argv)
 
     createStructureTensor<<<grid_size, block_size>>>(d_imgV1, d_imgV2, d_imgM11, d_imgM12, d_imgM22); CUDA_CHECK;
     cudaDeviceSynchronize(); CUDA_CHECK;
+
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM11, d_imgKernel, d_imgM11, 1); CUDA_CHECK;
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM12, d_imgKernel, d_imgM12, 1); CUDA_CHECK;
+    convolutionGPU<<<grid_size, block_size>>>(d_imgM22, d_imgKernel, d_imgM22, 1); CUDA_CHECK;
+    cudaDeviceSynchronize(); CUDA_CHECK;    
     
     // get smoothed image back
     cudaMemcpy(imgSmooth, d_imgS, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
