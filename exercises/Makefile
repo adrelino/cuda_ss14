@@ -36,3 +36,6 @@ ex9: ex9/main.cu aux.cu aux.h Makefile
 ex7_tex: ex7/main_tex.cu aux.cu aux.h Makefile
 	nvcc -o ex7/main_tex ex7/main_tex.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
 
+ex11: ex11/main.cu aux.cu aux.h Makefile
+	nvcc -o ex11/main ex11/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
+
