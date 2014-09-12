@@ -146,7 +146,7 @@ int main(int argc, char **argv)
     getParam("N", N, argc, argv);
     cout << "N: " << N <<"  [CPU iterations] "<<endl;
 
-    float tau = 0.2;
+    float tau = 0.25;
     getParam("tau", tau, argc, argv);
     cout << "tau: " << tau << endl;
 
@@ -212,38 +212,15 @@ int main(int argc, char **argv)
     int nc = mIn.channels();  // number of channels
     cout << "image: " << w << " x " << h << " nc="<<nc <<endl;
 
-
-
     cv::Mat G_sigma=kernel(sigma);
-    imagesc("Kernel sigma", G_sigma, 100, 200);
-    float *imgKernel  = new float[G_sigma.rows * G_sigma.cols];
-    convert_mat_to_layered(imgKernel,G_sigma);
+    //imagesc("Kernel sigma", G_sigma, 100, 200);
+    float *imgKernel_sigma  = new float[G_sigma.rows * G_sigma.cols];
+    convert_mat_to_layered(imgKernel_sigma,G_sigma);
 
     cv::Mat G_rho=kernel(rho);
-    imagesc("Kernel rho", G_rho, 100, 200);
+    //imagesc("Kernel rho", G_rho, 100, 200);
     float *imgKernel_rho  = new float[G_rho.rows * G_rho.cols];
     convert_mat_to_layered(imgKernel_rho,G_rho);
-
-
-
-
-
-
-    // Set the output image format
-    // ###
-    // ###
-    // ### TODO: Change the output image format as needed
-    // ###
-    // ###
-    cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
-    cv::Mat mOut2(h,w,mIn.type()); 
-    cv::Mat mOut3(h,w,mIn.type()); 
-
-    //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
-    cv::Mat mOut4(h,w,mIn.type());    // mOut will be a grayscale image, 1 layer
-    // ### Define your own output images here as needed
-
-
 
 
     // Allocate arrays
@@ -256,16 +233,7 @@ int main(int argc, char **argv)
     size_t n = (size_t)w*h*nc;
     float *imgIn  = new float[n];
 
-    // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
-    float *imgOut = new float[n];
-    float *imgOut2 = new float[n];
-    float *imgDivergence = new float[n];
-
-    float *imgLaplacian = new float[n]; //only one channel
-
-
-
-
+    size_t n3 = (size_t)w*h*3;
 
 
     // For camera mode: Make a loop to read in camera frames
@@ -298,28 +266,24 @@ int main(int argc, char **argv)
 
 	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_imgKernel_sigma, *d_imgS, *d_imgKernel_rho;
 
-
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-
 
     cudaMalloc(&d_imgS, n * sizeof(float) );CUDA_CHECK;
     cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
 	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
 
-    cudaMalloc(&d_struct, w*h*3 * sizeof(float) ); CUDA_CHECK;
-    cudaMalloc(&d_structSmooth, w*h*3 * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_struct, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_structSmooth, n3 * sizeof(float) ); CUDA_CHECK;
 
-    cudaMalloc(&d_imgKernel_sigma, G_sigma.cols * G_sigma.rows * sizeof(float) ); CUDA_CHECK;
-    cudaMemcpy(d_imgKernel_sigma, imgKernel, G_sigma.cols * G_sigma.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgKernel_sigma, (size_t) G_sigma.cols * G_sigma.rows * sizeof(float) ); CUDA_CHECK;
+    cudaMemcpy(d_imgKernel_sigma, imgKernel_sigma, G_sigma.cols * G_sigma.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    //d_imagesc("d_imgKernel_sigma",d_imgKernel_sigma,G_sigma.cols,G_sigma.rows,1,false,true);
 
-    cudaMalloc(&d_imgKernel_rho, G_rho.cols * G_rho.rows * sizeof(float) );CUDA_CHECK;
-    cudaMemcpy(d_imgKernel_rho, imgKernel_rho, G_rho.cols * G_rho.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
-
-
-
-
+    cudaMalloc(&d_imgKernel_rho, (size_t) G_rho.cols * G_rho.rows * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgKernel_rho, imgKernel_rho, (size_t) G_rho.cols * G_rho.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    //d_imagesc("d_imgKernel_rho",d_imgKernel_rho,G_rho.cols,G_rho.rows,1,false,true);
 
 	dim3 block = dim3(32,8,1);
 	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
@@ -334,16 +298,30 @@ int main(int argc, char **argv)
         convolutionGPU<<<grid, block>>>(d_imgIn, d_imgKernel_sigma, d_imgS, w, h, nc, G_sigma.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
 
+        //d_imagesc("d_imgS",d_imgS, w, h, nc);
+        //cv::waitKey(0);
+
         computeSpatialDerivatives<<<grid, block>>>(d_imgS,d_v1,d_v2, w, h, nc);
         cudaDeviceSynchronize();CUDA_CHECK;
+
+        //d_imagesc("d_v1",d_v1, w, h, nc);
+        //d_imagesc("d_v2",d_v1, w, h, nc);
+        //cv::waitKey(0);
         
         //a)
         createStructureTensorLayered<<<grid, block>>>(d_v1,d_v2,d_struct, w, h, nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
+        //d_imagesc("d_struct",d_struct, w, h, nc, true);
+        //d_imagesc("d_imgKernel_rho",d_imgKernel_rho,G_rho.cols,G_rho.rows,1,false,true);
+        //cv::waitKey(0);
+
         //postsmooth structure tensor with rho
         convolutionGPU<<<grid, block>>>(d_struct,d_imgKernel_rho, d_structSmooth, w, h, nc, G_rho.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
+
+        //d_imagesc("d_structSmooth",d_structSmooth, w, h, nc, true);
+        //cv::waitKey(0);
 
         //b and c)
         float *d_diffusionTensor;
@@ -351,20 +329,25 @@ int main(int argc, char **argv)
         diffusionTensorFromStructureTensor<<<grid, block>>>(d_structSmooth, d_diffusionTensor, w, h, C, alpha); 
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        cudaMemcpy(imgDivergence, d_diffusionTensor, 3*w*h* sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-        convert_layered_to_mat(mOut3, imgDivergence);
-        imagesc("DiffusionTensor", mOut3, 100+3*w+40, 100);
+        d_imagesc("d_diffusionTensor",d_diffusionTensor, w, h, nc, true);
+        cv::waitKey(0);
 
         //now use normal gradient, not rotational invariant one;
-        gradient<<<grid, block>>>(d_imgIn,d_v1,d_v2, w, h, nc);
-        cudaDeviceSynchronize();CUDA_CHECK;
-
+        //gradient<<<grid, block>>>(d_imgIn,d_v1,d_v2, w, h, nc);
+        //cudaDeviceSynchronize();CUDA_CHECK;
 
         diffusivity<<<grid,block>>>(d_v1,d_v2,d_diffusionTensor,w,h,nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
+        d_imagesc("d_v1",d_v1, w, h, nc);
+        d_imagesc("d_v2",d_v1, w, h, nc);
+        cv::waitKey(0);
+
         divergence<<<grid,block>>>(d_v1,d_v2,d_divergence, w, h, nc);
         cudaDeviceSynchronize();CUDA_CHECK;
+
+        d_imagesc("d_divergence",d_divergence, w, h, nc);
+        cv::waitKey(0);
 
         update<<<grid,block>>>(tau,d_imgIn,d_divergence,w,h,nc);
         cudaDeviceSynchronize();CUDA_CHECK;
@@ -372,10 +355,10 @@ int main(int argc, char **argv)
         timergpu.end();
         tg[i] = timergpu.get();
 
-        cudaMemcpy(imgLaplacian, d_imgIn, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-        
-        convert_layered_to_mat(mOut4, imgLaplacian);
-        showImage("u^i", mOut4, 120+40, 100);
+        d_imagesc("d_imgIn",d_imgIn, w, h, nc);
+
+        imagescReset();
+
         cout<<"iteration: "<<i<<endl;
         char key=cv::waitKey(delay);
         int keyN=key;
@@ -386,43 +369,19 @@ int main(int argc, char **argv)
         }
     }
 
-	cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgOut2, d_v2, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgDivergence, d_divergence, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    cudaMemcpy(imgLaplacian, d_imgIn, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-
+    cudaFree(d_imgIn);CUDA_CHECK;
+    cudaFree(d_imgS);CUDA_CHECK;
 	cudaFree(d_v1);CUDA_CHECK;
     cudaFree(d_v2);CUDA_CHECK;
-    cudaFree(d_divergence);CUDA_CHECK;
-	cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_struct);CUDA_CHECK;
     cudaFree(d_structSmooth);CUDA_CHECK;
+    cudaFree(d_divergence);CUDA_CHECK;
     cudaFree(d_imgKernel_sigma);CUDA_CHECK;
+    cudaFree(d_imgKernel_rho);CUDA_CHECK;
 
 
     float ms=GetAverage(tg, i)*1000;
     cout << "avg time for one gpu iteration: "<<ms<<" ms"<<endl;
-
-
-    // show input image
-    showImage("u^0", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
-
-    // show output image: first convert to interleaved opencv format from the layered raw array
-    convert_layered_to_mat(mOut, imgOut);
-    imagesc("Gradient_X", mOut, 100+w+40, 100);
-
-    convert_layered_to_mat(mOut2, imgOut2);
-    imagesc("Gradient_Y", mOut2, 100+2*w+40, 100);
-
-    convert_layered_to_mat(mOut3, imgDivergence);
-    imagesc("Divergence", mOut3, 100+3*w+40, 100);
-
-    convert_layered_to_mat(mOut4, imgLaplacian);
-    std::stringstream ss;
-    ss<<"u^" <<i<<", tau:"<<tau;
-    showImage(ss.str(), mOut4, 100+4*w+40, 100);
-
-    // ### Display your own output images here as needed
 
 #ifdef CAMERA
     // end of camera loop
@@ -430,25 +389,14 @@ int main(int argc, char **argv)
 #else
 
     cout<<"---[pres any key to exit]---"<<endl;
-
     // wait for key inputs
     cv::waitKey(0);
 #endif
 
     cout<<"exiting"<<endl;
 
-
-
-
-    // save input and result
-    //cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
-    //cv::imwrite("image_result.png",mOut*255.f);
-
     // free allocated arrays
     delete[] imgIn;
-    delete[] imgOut;
-    delete[] imgDivergence;
-    delete[] imgOut2;
 
     // close all opencv windows
     cvDestroyAllWindows();

@@ -25,9 +25,13 @@
 cv::Mat kernel(float sigma); //gaussian kernel, r=ceil(3*sigma)
 cv::Mat kernel(float sigma, int r); //gaussian kernel
 void imagesc(std::string name, cv::Mat mat, int x, int y);  //like matlab's imagesc scaled (best for grayscale images)
+void imagesc(std::string title, cv::Mat mat);
+void imagescReset(); //to start displaying images again at top left;
 float GetAverage(float dArray[], int iSize); //gets average of float array
 
-
+void d_imagesc(std::string name,float* d_imgIn, int w, int h, int nc, bool splitChannels, bool resize);//copy and display device image conveniently
+void d_imagesc(std::string name,float* d_imgIn, int w, int h, int nc, bool splitChannels);
+void d_imagesc(std::string name,float* d_imgIn, int w, int h, int nc);//copy and display device image conveniently
 
 
 
