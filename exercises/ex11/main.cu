@@ -28,43 +28,6 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
-// __global__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
-//     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-//     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-//     if(x>=w || y>=h) return;
-
-//     int xPlus = x + 1;
-//     if(xPlus>=w) xPlus=w-1;
-
-//     int yPlus = y + 1;
-//     if(yPlus>=h) yPlus=h-1;
-
-//     for (int i = 0; i < nc; ++i)
-//     {
-//         v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-//         v2[x+ y*w +i*w*h]=imgIn[x+ yPlus*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-
-//     }
-// }
-
-// //                         in        in         out
-// __global__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
-//     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-//     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-//     if(x>=w || y>=h) return;
-
-//     for (int i = 0; i < nc; ++i)
-//     {
-//         float backv1_x=v1[x+ y*w +i*w*h];
-//         if(x>0) backv1_x -=v1[(x-1)+ y*w + i*w*h];
-//         float backv2_y=v2[x+ y*w + i*w*h];
-//         if(y>0) backv2_y -=v2[x+ (y-1)*w + i*w*h];
-//         imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
-//     }
-// }
-
 //the update step for the image u_n -> u_n+1
 __global__ void update(float tau, float *u_n, float *div, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -117,51 +80,6 @@ __global__ void diffusivity(float* v1, float* v2, int w, int h, int nc, int func
         v2[x+ y*w +i*w*h]*=g;
     }
 }
-
-// __global__ void gpuEntry(float* d_imgIn, float* d_v1, float* d_v2, float* d_divergence, int w, int h, int nc, int N, float tau, int functionType, float eps){
-//     for (int i = 0; i < N; ++i,__syncthreads()){
-//         gradient (d_imgIn, d_v1, d_v2, w, h, nc);
-//         diffusivity(d_v1,d_v2,w,h,nc,functionType,eps);
-//         divergence (d_v1,d_v2,d_divergence, w, h, nc);
-//         update(tau,d_imgIn,d_divergence,w,h,nc);
-//     }
-// }
-
-// __global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
-//     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-//     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-//     size_t k = kernelSize;
-
-//     int r=k/2;
-
-//     //check for boundarys of the block
-//     if(x>=w || y>=h) return; 
-
-//     //iterate over all channels
-//     for(unsigned int c=0;c<nc;c++) {
-//         float sum=0;
-//         //do convolution
-//         for(unsigned int i=0;i<k;i++){
-//             unsigned int x_new;
-//             //clamping x
-//             if(x+r<i) x_new=0;
-//             else if(x+r-i>=w) x_new=w-1;
-//             else x_new=x+r-i;
-//             for(unsigned int j=0;j<k;j++){
-//                 //clamping y
-//                 unsigned int y_new;
-//                 if(y+r<j)
-//                     y_new=0;
-//                 else if(y+r-j>=h)
-//                     y_new=h-1;
-//                 else
-//                     y_new=y+r-j;
-//                 sum+=kernel[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
-//             }
-//         }
-//         imgOut[x+w*y+w*h*c]=sum;
-//     }
-// }
 
 int main(int argc, char **argv)
 {
