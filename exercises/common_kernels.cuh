@@ -27,7 +27,7 @@ __device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     int xPlus = x + 1;
     if(xPlus>=w) xPlus=w-1;
@@ -48,18 +48,14 @@ __device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, 
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
-
-    int xMinus = x - 1;
-    if(xMinus<0) xMinus=0;
-
-    int yMinus = y - 1;
-    if(yMinus<0) yMinus=0;
+    if(x>=w || y>=h) return;
 
     for (int i = 0; i < nc; ++i)
     {
-        float backv1_x=v1[x+ y*w +i*w*h]-v1[xMinus+ y*w + i*w*h];
-        float backv2_y=v2[x+ y*w + i*w*h]-v2[x+ yMinus*w + i*w*h];
+        float backv1_x=v1[x+ y*w +i*w*h];
+        if(x>0) backv1_x -=v1[(x-1)+ y*w + i*w*h];
+        float backv2_y=v2[x+ y*w + i*w*h];
+        if(y>0) backv2_y -=v2[x+ (y-1)*w + i*w*h];
         imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
     }
 }
@@ -69,7 +65,7 @@ __device__ __forceinline__ void l2norm(float *imgIn, float *imgOut, int w, int h
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     float c=0;
 
