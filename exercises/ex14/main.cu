@@ -35,11 +35,23 @@ __host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, 
         (*g)=1.0;
 }
 
+__global__ void computeDiffusivity(float *d_dx, float *d_dy, float *g, int w, int h, int nc) {
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdy.y + blockDim.y * blockIdx.y;
+
+  if (x >= w || y >= h)
+    return;
+
+  float val_norm = 0.0f;
+  for (int c = 0; c < nc; ++c)
+    val_norm += d_dx[x + y*w + c*w*h] * d_dx[x + y*w + c*w*h] +
+      d_dy[x + y*w + c*w*h] * d_dy[x + y*w + c*w*h];
+
+}
+
 __global__ void denoiseJacobi(float *d_imgIn, float *d_imgOut, float *d_dx, float *d_dy,
 			int w, int h, int nc) {
-  // compute the gradient
-  gradient(d_imgIn, d_dx, d_dy, w, h, nc);
-}
+ }
 
 // uncomment to use the camera
 //#define CAMERA
@@ -78,6 +90,14 @@ int main(int argc, char **argv)
     float sigma = 0.1;
     getParam("sigma", sigma, argc, argv);
     cout << "sigma: " << sigma << endl;
+
+    int N = 200;
+    getParam("N", N, argc, argv);
+    cout << "Iterations N: " << N << endl;
+
+    float lambda = 0.5f;
+    getParam("lambda", lambda, argc, argv);
+    cout << "Lambda : " << lambda << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -173,7 +193,9 @@ int main(int argc, char **argv)
       // call the kernels
       gradient(d_imgIn, d_dx, d_dy, w, h, nc); CUDA_CHECK;
       cudaDeviceSynchronize();
-      
+
+
+
       cudaMalloc(d_dx, n * sizeof(float)); CUDA_CHECK;
       cudaMalloc(d_dy, n * sizeof(float)); CUDA_CHECK;
 
