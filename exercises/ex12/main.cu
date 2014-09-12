@@ -37,10 +37,10 @@ __global__ void gammaGPU(float *imgIn, float *imgOut, size_t pw, size_t w, size_
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if (x>=pw || y>=h) return;
+    if (x>=w || y>=h) return;
 
     for(int c=0; c<nc; c++){
-        imgOut[x+y*w+c*h*w]=powf(imgIn[x+y*w+c*h*w],gamma);
+        imgOut[x+y*pw+c*h*pw]=powf(imgIn[x+y*pw+c*h*pw],gamma);
     }
 }
 
@@ -244,7 +244,7 @@ int main(int argc, char **argv)
 
     // show output image: first convert to interleaved opencv format from the layered raw array
     convert_layered_to_mat(mOut, imgOut);
-    showImage("Output", mOut, 100, 100);
+    showImage("Output", mOut, 100+40, 100);
 
     // ### Display your own output images here as needed
 
