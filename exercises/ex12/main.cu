@@ -201,14 +201,16 @@ int main(int argc, char **argv)
     	timergpu.start();
     	
     	float *d_imgIn, *d_imgOut;
-        size_t pitch, pitch2;
-    	cudaMallocPitch(&d_imgIn, &pitch, w * sizeof(float), h*nc);
+        size_t pitchImgIn, pitchImgOut;
+	
+    	cudaMallocPitch(&d_imgIn, &pitchImgIn, w * sizeof(float), h*nc);
     	CUDA_CHECK;
-    	cudaMemcpy2D(d_imgIn, pitch, imgIn, w * sizeof(float), w * sizeof(float), h*nc, cudaMemcpyHostToDevice);
+    	cudaMemcpy2D(d_imgIn, pitchImgIn, imgIn, w * sizeof(float), w * sizeof(float), h*nc, cudaMemcpyHostToDevice);
     	CUDA_CHECK;
-    	cudaMallocPitch(&d_imgOut, &pitch2, w * sizeof(float), h*nc);
+	
+    	cudaMallocPitch(&d_imgOut, &pitchImgOut, w * sizeof(float), h*nc);
     	CUDA_CHECK;
-        size_t pw=pitch / sizeof(float);
+        size_t pw=pitchImgIn / sizeof(float);
     	
     	timergpu2.start();
 
@@ -222,7 +224,7 @@ int main(int argc, char **argv)
     	tg2[i] = timergpu2.get();
     	
     	CUDA_CHECK;
-    	cudaMemcpy2D(imgOut, w * sizeof(float), d_imgOut, pitch, w * sizeof(float), h*nc, cudaMemcpyDeviceToHost);
+    	cudaMemcpy2D(imgOut, w * sizeof(float), d_imgOut, pitchImgOut, w * sizeof(float), h*nc, cudaMemcpyDeviceToHost);
     	CUDA_CHECK;
     	cudaFree(d_imgOut);
     	CUDA_CHECK;
@@ -236,10 +238,6 @@ int main(int argc, char **argv)
     cout << "avg time cpu: " << GetAverage(tc, repeats)*1000 << " ms" << endl;
     cout << "avg time gpu: " << GetAverage(tg, repeats)*1000 << " ms" << endl;
     cout << "avg time gpu allocfree: " << GetAverage(tg2, repeats)*1000 << " ms" << endl;
-
-
-
-
 
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
@@ -257,9 +255,6 @@ int main(int argc, char **argv)
     // wait for key inputs
     cv::waitKey(0);
 #endif
-
-
-
 
     // save input and result
     cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
