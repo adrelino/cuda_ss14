@@ -17,6 +17,7 @@
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 #include "opencv_helpers.h"
+#include "aux.h"
 
 cv::Mat kernel(float sigma){
     int r = ceil(3*sigma);
