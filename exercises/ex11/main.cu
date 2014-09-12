@@ -22,6 +22,7 @@
 #include <math.h>
 //#include <stdio.h>
 using namespace std;
+#include "opencv_helpers.h"
 
 // uncomment to use the camera
 //#define CAMERA
@@ -31,16 +32,6 @@ using namespace std;
 //#define G_EXP = 3
 //#define eps = 0.000001
 
-
-//ex2
-void imagesc(std::string name, cv::Mat mat, int x, int y){
-    double min,max;
-    cv::minMaxLoc(mat,&min,&max);
-    cv::Mat  kernel_prime = mat/max;
-    showImage(name, kernel_prime, x,y);
-}
-
-//                       in             out      out
 __device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -143,12 +134,40 @@ __global__ void gpuEntry(float* d_imgIn, float* d_v1, float* d_v2, float* d_dive
     }
 }
 
-float GetAverage(float dArray[], int iSize) {
-    float dSum = dArray[0];
-    for (int i = 1; i < iSize; ++i) {
-        dSum += dArray[i];
+__global__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
+    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    size_t k = kernelSize;
+
+    int r=k/2;
+
+    //check for boundarys of the block
+    if(x>=w || y>=h) return; 
+
+    //iterate over all channels
+    for(unsigned int c=0;c<nc;c++) {
+        float sum=0;
+        //do convolution
+        for(unsigned int i=0;i<k;i++){
+            unsigned int x_new;
+            //clamping x
+            if(x+r<i) x_new=0;
+            else if(x+r-i>=w) x_new=w-1;
+            else x_new=x+r-i;
+            for(unsigned int j=0;j<k;j++){
+                //clamping y
+                unsigned int y_new;
+                if(y+r<j)
+                    y_new=0;
+                else if(y+r-j>=h)
+                    y_new=h-1;
+                else
+                    y_new=y+r-j;
+                sum+=kernel[i+j*k]*imgIn[x_new+y_new*w+w*h*c];
+            }
+        }
+        imgOut[x+w*y+w*h*c]=sum;
     }
-    return dSum/iSize;
 }
 
 int main(int argc, char **argv)
@@ -259,6 +278,7 @@ int main(int argc, char **argv)
 
     //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
     cv::Mat mOut4(h,w,mIn.type());    // mOut will be a grayscale image, 1 layer
+    cv::Mat mConvolution(h,w,mIn.type());
     // ### Define your own output images here as needed
 
 
@@ -278,13 +298,8 @@ int main(int argc, char **argv)
     float *imgOut = new float[n];
     float *imgOut2 = new float[n];
     float *imgDivergence = new float[n];
-
     float *imgLaplacian = new float[n]; //only one channel
-
-
-
-
-
+    float *imgConvolution = new float[n];
 
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
@@ -314,21 +329,46 @@ int main(int argc, char **argv)
     int i=0;
     Timer timergpu; 
 
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence;
+    float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_imgConvolution;
 
-	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
-	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+    cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
+    cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
 
     cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
-	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_imgConvolution, n * sizeof(float)); CUDA_CHECK;
 
 
-	dim3 block = dim3(32,8,1);
-	dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
+    dim3 block = dim3(32,4,1);
+    dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     bool isRunning=true;
 
+    // compare to convolution with gaussian with sigma = sqrt(2*tau*total_iterations)
+    cout << "Doing convolution with Gaussian..." << endl;
+    size_t totalIterations = N * NN;
+    float sigma = sqrtf(2*tau*totalIterations);
+
+    cv::Mat gaussianKernel = kernel(sigma);
+    size_t kernelSize = gaussianKernel.rows * gaussianKernel.cols;
+    float *imgKernel = new float[kernelSize];
+    convert_mat_to_layered(imgKernel, gaussianKernel);
+    float *d_imgKernel;
+
+    cudaMalloc(&d_imgKernel, kernelSize * sizeof(float)); CUDA_CHECK;
+    cudaMemcpy(d_imgKernel, imgKernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
+
+    // do convolution
+    convolutionGPU<<<grid,block>>>(d_imgIn, d_imgKernel, d_imgConvolution, w, h, nc, gaussianKernel.rows); CUDA_CHECK;
+    
+    cudaDeviceSynchronize();CUDA_CHECK;
+    cudaMemcpy(imgConvolution, d_imgConvolution, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+    convert_layered_to_mat(mConvolution, imgConvolution);
+
+    cudaFree(d_imgConvolution);
+    cudaFree(d_imgKernel);
+    
 	for (; i < N && isRunning; ++i)
     {
         timergpu.start();
@@ -351,19 +391,20 @@ int main(int argc, char **argv)
         }
     }
 
-	cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+
+
+    cudaMemcpy(imgOut, d_v1, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
     cudaMemcpy(imgOut2, d_v2, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
     cudaMemcpy(imgDivergence, d_divergence, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
     cudaMemcpy(imgLaplacian, d_imgIn, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
 
-	cudaFree(d_v1);CUDA_CHECK;
+    cudaFree(d_v1);CUDA_CHECK;
     cudaFree(d_v2);CUDA_CHECK;
     cudaFree(d_divergence);CUDA_CHECK;
-	cudaFree(d_imgIn);CUDA_CHECK;
+    cudaFree(d_imgIn);CUDA_CHECK;
 
     float ms=GetAverage(tg, i)*1000;
     cout << "avg time for "<<NN<<" gpu iteration(s): "<<  ms << " ms" << "   ,for one gpu iteration: "<<ms/NN<<" ms"<<endl;
-
 
     // show input image
     showImage("u^0", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
@@ -382,6 +423,11 @@ int main(int argc, char **argv)
     std::stringstream ss;
     ss<<"u^" <<i*NN<<", tau:"<<tau;
     showImage(ss.str(), mOut4, 100+4*w+40, 100);
+
+    showImage("Convolution with Gaussian", mConvolution, 100+5*w+40, 100);
+
+    cv::Mat diffResults = mOut4 - mConvolution;
+    imagesc("Subtracted Gaussian", diffResults, 100+6*w+40, 100);
 
     // ### Display your own output images here as needed
 
@@ -407,6 +453,9 @@ int main(int argc, char **argv)
     delete[] imgOut;
     delete[] imgDivergence;
     delete[] imgOut2;
+    
+    delete[] imgKernel;
+    delete[] imgConvolution;
 
     // close all opencv windows
     cvDestroyAllWindows();
