@@ -23,7 +23,7 @@
 
 
 //                       in             out      out
-__device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+__global__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -44,7 +44,7 @@ __device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int
 }
 
 //                         in        in         out
-__device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
+__global__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -84,7 +84,7 @@ __device__ __forceinline__ void l2norm(float *imgIn, float *imgOut, int w, int h
 }
 
 
-__device__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
+__global__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t k = kernelSize;
@@ -121,7 +121,7 @@ __device__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, floa
 }
 
 
-__device__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy, int w, int h, int nc) {
+__global__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy, int w, int h, int nc) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -164,7 +164,7 @@ __device__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d
   }
 }
 
-__device__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22, int w, int h, int nc) {
+__global__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22, int w, int h, int nc) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -178,7 +178,7 @@ __device__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, 
   }
 }
 
-__device__ __forceinline__ void createStructureTensorLayered(float *d_dx, float *d_dy, float *d_m11_12_22, int w, int h, int nc) {
+__global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float *d_dy, float *d_m11_12_22, int w, int h, int nc) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -214,10 +214,51 @@ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lam
 
   //only calculating the first column of 
   //[eig1 | x*eig1]=A-lambda2*I;
-  e1->x=m.x-lambda2;
+  e1->x = m.x - (*lambda2);
   //[eig2 | x*eig2]=A-lambda1*I;
-  e2->x=m.x-lambda1;
+  e2->x = m.x - (*lambda1);
 
   e1->y=m.z; //same for both, since -I*lambda is 0 at the off diagonals   //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
   e2->y=m.z;   //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
+}
+
+// 2x2 matrix times scalar multiplication, result stored in m
+__host__ __device__ __forceinline__ void mul(float s, float4 *m) { //notice e1,2 are arrays
+  m->x = s * m->x;
+  m->y = s * m->y;
+  m->z = s * m->z;
+  m->w = s * m->w;
+}
+
+// 2x2 matrix times scalar multiplication, result stored in m
+__host__ __device__ __forceinline__ void add(float4 l, float4 *m) { //notice e1,2 are arrays
+  m->x = l.x + m->x;
+  m->y = l.y + m->y;
+  m->z = l.z + m->z;
+  m->w = l.w + m->w;
+}
+__host__ __device__ float4 operator+(const float4 & a, const float4 & b) {
+
+   return make_float4(a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w);
+
+}
+
+// 2x2 matrix times 2x1 vector multiplication -> 2x1 vector stored in input v value
+__host__ __device__ __forceinline__ void mulVec(float4 m, float2 *v) { //notice e1,2 are arrays
+  float tempx = m.x * v->x + m.y * v->y;
+  v->y = m.z * v->x + m.w * v->y;
+  v->x = tempx;
+}
+__host__ __device__ float2 operator*(const float4 & m, const float2 & v) {
+
+   return make_float2(m.x * v.x + m.y * v.y, m.z * v.x + m.w * v.y);
+
+}
+
+// outer product of 2x1 vector with itself -> 2x2 matrix
+__host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e1,2 are arrays
+  m->x = v.x * v.x;
+  m->y = v.x * v.y;
+  m->z = v.y * v.x;
+  m->w = v.y * v.y;
 }
