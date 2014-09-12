@@ -228,6 +228,11 @@ int main(int argc, char **argv)
     g_hat_diffusivity(0,&g0, functionType, eps);
     float tauMax=0.25f/g0;
 
+    // enable gaussian comparison
+    bool doGaussianComparison = false;
+    getParam("gauss", doGaussianComparison, argc, argv);
+    cout << "doGaussianComparison: " << doGaussianComparison << endl;
+
     if(tau>tauMax){
         cout << "tau: " << tau <<"    is to big for convergence, setting tau to 0.25*g(0)         new    tau: "<<tauMax<< endl;
         tau=tauMax;
@@ -281,9 +286,6 @@ int main(int argc, char **argv)
     cv::Mat mConvolution(h,w,mIn.type());
     // ### Define your own output images here as needed
 
-
-
-
     // Allocate arrays
     // input/output image width: w
     // input/output image height: h
@@ -299,7 +301,6 @@ int main(int argc, char **argv)
     float *imgOut2 = new float[n];
     float *imgDivergence = new float[n];
     float *imgLaplacian = new float[n]; //only one channel
-    float *imgConvolution = new float[n];
 
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
@@ -339,35 +340,43 @@ int main(int argc, char **argv)
     cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_imgConvolution, n * sizeof(float)); CUDA_CHECK;
 
-
     dim3 block = dim3(32,4,1);
     dim3 grid = dim3((w + block.x - 1 ) / block.x,(h + block.y - 1 ) / block.y, 1);
 
     bool isRunning=true;
 
     // compare to convolution with gaussian with sigma = sqrt(2*tau*total_iterations)
-    cout << "Doing convolution with Gaussian..." << endl;
-    size_t totalIterations = N * NN;
-    float sigma = sqrtf(2*tau*totalIterations);
 
-    cv::Mat gaussianKernel = kernel(sigma);
-    size_t kernelSize = gaussianKernel.rows * gaussianKernel.cols;
-    float *imgKernel = new float[kernelSize];
-    convert_mat_to_layered(imgKernel, gaussianKernel);
-    float *d_imgKernel;
-
-    cudaMalloc(&d_imgKernel, kernelSize * sizeof(float)); CUDA_CHECK;
-    cudaMemcpy(d_imgKernel, imgKernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
-
-    // do convolution
-    convolutionGPU<<<grid,block>>>(d_imgIn, d_imgKernel, d_imgConvolution, w, h, nc, gaussianKernel.rows); CUDA_CHECK;
     
-    cudaDeviceSynchronize();CUDA_CHECK;
-    cudaMemcpy(imgConvolution, d_imgConvolution, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
-    convert_layered_to_mat(mConvolution, imgConvolution);
+    if (doGaussianComparison) {
+      cout << "Doing convolution with Gaussian..." << endl;
+      float *imgConvolution = new float[n];
+      size_t totalIterations = N * NN;
+      float sigma = sqrtf(2*tau*totalIterations);
 
-    cudaFree(d_imgConvolution);
-    cudaFree(d_imgKernel);
+      cv::Mat gaussianKernel = kernel(sigma);
+      size_t kernelSize = gaussianKernel.rows * gaussianKernel.cols;
+
+      float *imgKernel = new float[kernelSize];    
+      float *d_imgKernel;
+      
+      convert_mat_to_layered(imgKernel, gaussianKernel);
+      cudaMalloc(&d_imgKernel, kernelSize * sizeof(float)); CUDA_CHECK;
+      cudaMemcpy(d_imgKernel, imgKernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
+
+      // do convolution
+      convolutionGPU<<<grid,block>>>(d_imgIn, d_imgKernel, d_imgConvolution, w, h, nc, gaussianKernel.rows); CUDA_CHECK;
+    
+      cudaDeviceSynchronize();CUDA_CHECK;
+      cudaMemcpy(imgConvolution, d_imgConvolution, n * sizeof(float), cudaMemcpyDeviceToHost);CUDA_CHECK;
+      convert_layered_to_mat(mConvolution, imgConvolution);
+
+      cudaFree(d_imgConvolution);
+      cudaFree(d_imgKernel);
+
+      delete[] imgKernel;
+      delete[] imgConvolution;      
+    }
     
 	for (; i < N && isRunning; ++i)
     {
@@ -424,10 +433,12 @@ int main(int argc, char **argv)
     ss<<"u^" <<i*NN<<", tau:"<<tau;
     showImage(ss.str(), mOut4, 100+4*w+40, 100);
 
-    showImage("Convolution with Gaussian", mConvolution, 100+5*w+40, 100);
+    if (doGaussianComparison) {
+      showImage("Convolution with Gaussian", mConvolution, 100+5*w+40, 100);
 
-    cv::Mat diffResults = mOut4 - mConvolution;
-    imagesc("Subtracted Gaussian", diffResults, 100+6*w+40, 100);
+      cv::Mat diffResults = mOut4 - mConvolution;
+      imagesc("Subtracted Gaussian", diffResults, 100+6*w+40, 100);
+    }
 
     // ### Display your own output images here as needed
 
@@ -454,8 +465,7 @@ int main(int argc, char **argv)
     delete[] imgDivergence;
     delete[] imgOut2;
     
-    delete[] imgKernel;
-    delete[] imgConvolution;
+
 
     // close all opencv windows
     cvDestroyAllWindows();
