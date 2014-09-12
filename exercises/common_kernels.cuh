@@ -16,11 +16,14 @@
 // ### Adrian Haarbach, haarbach@in.tum.de, p077
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
-#include "common_kernels.h"
+//#include "common_kernels.h"
+#include <cuda_runtime.h>
+
+//https://devtalk.nvidia.com/default/topic/487686/how-to-split-cuda-code/  solution !!!
 
 
 //                       in             out      out
-__device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+__device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -41,7 +44,7 @@ __device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int n
 }
 
 //                         in        in         out
-__device__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
+__device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -62,7 +65,7 @@ __device__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, in
 }
 
 //                     in           out
-__device__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
+__device__ __forceinline__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -81,7 +84,7 @@ __device__ void l2norm(float *imgIn, float *imgOut, int w, int h, int nc){
 }
 
 
-__device__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
+__device__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t k = kernelSize;
@@ -118,7 +121,7 @@ __device__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w
 }
 
 
-__device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy) {
+__device__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy, int w, int h, int nc) {
 
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -161,7 +164,7 @@ __device__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy
   }
 }
 
-__device__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22) {
+__device__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22, int w, int h, int nc) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -175,21 +178,18 @@ __device__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, fl
   }
 }
 
-//http://en.wikipedia.org/wiki/Eigenvalue_algorithm#2.C3.972_matrices
-__device__ void compute_eigenvalues2x2(float a, float b, float c, float d, float *lambda1, float *lambda2) {
-  //testing of new code:
-  float4 m;
-  m.x=a;
-  m.y=b;
-  m.z=c;
-  m.w=d;
+__device__ __forceinline__ void createStructureTensorLayered(float *d_dx, float *d_dy, float *d_m11_12_22, int w, int h, int nc) {
+  size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+  size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-  float2 eigval;
-  float4 eigvec;
-  compute_eig(m,&eigval,&eigvec);
+  if (x >= w || y >= h)
+    return;
 
-  *lambda1=eigval.x;
-  *lambda2=eigval.y;
+  for(int c = 0; c < nc; ++c) {
+      d_m11_12_22[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+  }
 }
 
 //float4 used as 2x2 matrix
@@ -204,42 +204,20 @@ __device__ void compute_eigenvalues2x2(float a, float b, float c, float d, float
 // e1x  e2x
 // e1y  e2y
 //http://en.wikipedia.org/wiki/Eigenvalue_algorithm#2.C3.972_matrices
-__device__ void compute_eig(float4 m, float2 *eigval, float4 *eigvec); //notice eig1,2 are arrays
+__device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
   float trace = m.x + m.w;
   float sqrt_term = sqrtf(trace*trace - 4*(m.x*m.w - m.y*m.z));
 
 
-  float lambda1 = (trace + sqrt_term) / 2.0f; //lambda1
-  float lambda2 = (trace - sqrt_term) / 2.0f; //lambda2  //QUESTION: since sqrt_term >= 0 always, it must follow that lambda1 > lambda2;
+  (*lambda1) = (trace + sqrt_term) / 2.0f; //lambda1  //larger eigenvalue
+  (*lambda2) = (trace - sqrt_term) / 2.0f; //lambda2  //smaller eigenvalue QUESTION: since sqrt_term >= 0 always, it must follow that lambda1 > lambda2;
 
   //only calculating the first column of 
   //[eig1 | x*eig1]=A-lambda2*I;
-  float e1x=m.x-lamvda2;
+  e1->x=m.x-lambda2;
   //[eig2 | x*eig2]=A-lambda1*I;
-  float e2x=m.x-lambda1;
+  e2->x=m.x-lambda1;
 
-  float e12y=m.z; //same for both, since -I*lambda is 0 at the off diagonals
-
-  //switch if not already in right order
-  if(lambda1<lambda2){
-    float temp=lambda2;
-    lambda2=lambda1;
-    lambda1=lambda2;
-
-    temp=e1x;
-    e1x=e2x;
-    e2x=e1x;
-  }
-
-  (*eigval).x =lambda1 //larger eigenvalue
-  (*eigval).y =lambda2 //smaller eigenvalue
-
-  //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
-  (*eigvec).x = e1x; 
-  (*eigvec).z = e12y;
-
-  //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
-  (*eigvec).y = e2x;
-  (*eigvec).w = e12y;
-
+  e1->y=m.z; //same for both, since -I*lambda is 0 at the off diagonals   //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
+  e2->y=m.z;   //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
 }
