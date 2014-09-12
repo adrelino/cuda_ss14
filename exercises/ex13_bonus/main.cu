@@ -20,6 +20,8 @@
 #include "aux.h"
 #include <iostream>
 #include <math.h>
+#include "common_kernels.cuh"
+#include "opencv_helpers.h"
 //#include <stdio.h>
 using namespace std;
 
@@ -31,63 +33,12 @@ using namespace std;
 //#define G_EXP = 3
 //#define eps = 0.000001
 
-
-//ex2
-void imagesc(std::string name, cv::Mat mat, int x, int y){
-    double min,max;
-    cv::minMaxLoc(mat,&min,&max);
-    cv::Mat  kernel_prime = mat/max;
-    showImage(name, kernel_prime, x,y);
-}
-
-//                       in             out      out
-__device__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    int xPlus = x + 1;
-    if(xPlus>=w) xPlus=w-1;
-
-    int yPlus = y + 1;
-    if(yPlus>=h) yPlus=h-1;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        v1[x+ y*w +i*w*h]=imgIn[xPlus+ y*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-        v2[x+ y*w +i*w*h]=imgIn[x+ yPlus*w + i*w*h]-imgIn[x+ y*w + i*w*h];
-
-    }
-}
-
-//                         in        in         out
-__device__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if(x>w || y>h) return;
-
-    int xMinus = x - 1;
-    if(xMinus<0) xMinus=0;
-
-    int yMinus = y - 1;
-    if(yMinus<0) yMinus=0;
-
-    for (int i = 0; i < nc; ++i)
-    {
-        float backv1_x=v1[x+ y*w +i*w*h]-v1[xMinus+ y*w + i*w*h];
-        float backv2_y=v2[x+ y*w + i*w*h]-v2[x+ yMinus*w + i*w*h];
-        imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
-    }
-}
-
 //the update step for the image u_n -> u_n+1
 __device__ void update(float tau, float *u_n, float *div, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     for (int i = 0; i < nc; ++i){
         u_n[x+ y*w +i*w*h]=u_n[x+ y*w +i*w*h]+tau*div[x+ y*w +i*w*h];
@@ -110,7 +61,7 @@ __host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, 
 __device__ void diffusivity(float* v1, float* v2, int w, int h, int nc, int functionType, float eps){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     //calculates the frobenius norm of 1*2 (gray) or 3*2 (color) matrices
     float s=0;
@@ -134,21 +85,47 @@ __device__ void diffusivity(float* v1, float* v2, int w, int h, int nc, int func
     }
 }
 
-__global__ void gpuEntry(float* d_imgIn, float* d_v1, float* d_v2, float* d_divergence, int w, int h, int nc, int N, float tau, int functionType, float eps){
+//step 2 and 3 combined in one kernel. stores the result back into v1 and v2
+__device__ void computeDiffusionTensor(float* v1, float* v2, int w, int h, int nc, int functionType, float eps){
+    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    if(x>=w || y>=h) return;
+
+    computeSpatialDerivatives(d_imgIn,d_v1,d_v2, w, h, nc);
+    createStructureTensorLayered(d_v1,d_v2,d_struct, w, h, nc);
+    convolutionGPU(d_struct, d_kernel, d_structSmooth, w, h, 3, kernelSize); //always 3 channels, even if input is grayscale d_stuct=[m11,m12,m22]
+    
+    float4 m;
+    m.x=d_structSmooth[x + w*y]; //m11
+    m.y=d_structSmooth[x + w*y + w*h]; //m12
+    m.z=m.y;                            //m21 == m12
+    m.w=d_structSmooth[x + w*y + w*h*2]; //m22
+
+    float lambda1,lambda2,
+    float2 e1,e2;
+
+    compute_eig(m, &lambda1, &lambda2, &e1, &e2);
+
+
+    float g_hat;
+    g_hat_diffusivity(s,&g_hat,functionType,eps);
+
+    for (int i = 0; i < nc; ++i)
+    {
+        v1[x+ y*w +i*w*h]=v1[x+ y*w +i*w*h]*g_hat; //store result again in v1,v2
+        v2[x+ y*w +i*w*h]=v2[x+ y*w +i*w*h]*g_hat;
+    }
+}
+
+
+__global__ void gpuEntry(float* d_imgIn, float* d_v1, float* d_v2, float* d_divergence, float* d_struct, float* d_structSmooth, float* d_kernel, int w, int h, int nc, int N, float tau, int functionType, float eps, int kernelSize){
     for (int i = 0; i < N; ++i,__syncthreads()){
+
         gradient (d_imgIn, d_v1, d_v2, w, h, nc);
         diffusivity(d_v1,d_v2,w,h,nc,functionType,eps);
         divergence (d_v1,d_v2,d_divergence, w, h, nc);
         update(tau,d_imgIn,d_divergence,w,h,nc);
     }
-}
-
-float GetAverage(float dArray[], int iSize) {
-    float dSum = dArray[0];
-    for (int i = 1; i < iSize; ++i) {
-        dSum += dArray[i];
-    }
-    return dSum/iSize;
 }
 
 int main(int argc, char **argv)
@@ -196,6 +173,10 @@ int main(int argc, char **argv)
     getParam("tau", tau, argc, argv);
     cout << "tau: " << tau << endl;
 
+    float rho = 0.5;
+    getParam("rho", rho, argc, argv);
+    cout << "rho: " << rho << endl;
+
     int delay = 5;
     getParam("delay", delay, argc, argv);
     cout << "delay: " << delay << " ms"<<"    [use -delay 0 to step with keys]"<<endl;
@@ -211,7 +192,7 @@ int main(int argc, char **argv)
 
     //check if tau is not too large;
     float g0;
-    g_hat_diffusivity(0,&g0, functionType, eps);
+//    g_hat_diffusivity(0,&g0, functionType, eps);
     float tauMax=0.25f/g0;
 
     if(tau>tauMax){
@@ -251,6 +232,14 @@ int main(int argc, char **argv)
     int h = mIn.rows;         // height
     int nc = mIn.channels();  // number of channels
     cout << "image: " << w << " x " << h << " nc="<<nc <<endl;
+
+
+    cv::Mat k=kernel(rho);
+    imagesc("Kernel", k, 100, 200);
+    float *imgKernel  = new float[k.rows * k.cols];
+    convert_mat_to_layered(imgKernel,k);
+
+
 
 
 
@@ -322,14 +311,22 @@ int main(int argc, char **argv)
     int i=0;
     Timer timergpu; 
 
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence;
+	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_kernel;
+
 
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
 
+
     cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
 	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
+
+    cudaMalloc(&d_struct, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_structSmooth, n * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_kernel, k.cols * k.rows * sizeof(float) ); CUDA_CHECK;
+    cudaMemcpy(d_kernel, imgKernel, k.cols * k.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
+
 
 
 	dim3 block = dim3(32,8,1);
@@ -340,7 +337,7 @@ int main(int argc, char **argv)
 	for (; i < N && isRunning; ++i)
     {
         timergpu.start();
-        gpuEntry<<<grid,block>>> (d_imgIn, d_v1, d_v2, d_divergence, w, h, nc, NN, tau, functionType, eps);CUDA_CHECK;
+        gpuEntry<<<grid,block>>> (d_imgIn, d_v1, d_v2, d_divergence,d_struct,d_structSmooth,d_kernel,w, h, nc, NN, tau, functionType, eps, k.rows);CUDA_CHECK;
         cudaDeviceSynchronize();
         timergpu.end();
         tg[i] = timergpu.get();
@@ -368,6 +365,10 @@ int main(int argc, char **argv)
     cudaFree(d_v2);CUDA_CHECK;
     cudaFree(d_divergence);CUDA_CHECK;
 	cudaFree(d_imgIn);CUDA_CHECK;
+    cudaFree(d_struct);CUDA_CHECK;
+    cudaFree(d_structSmooth);CUDA_CHECK;
+    cudaFree(d_kernel);CUDA_CHECK;
+
 
     float ms=GetAverage(tg, i)*1000;
     cout << "avg time for "<<NN<<" gpu iteration(s): "<<  ms << " ms" << "   ,for one gpu iteration: "<<ms/NN<<" ms"<<endl;
