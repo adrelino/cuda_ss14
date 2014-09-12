@@ -27,7 +27,7 @@ __device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     int xPlus = x + 1;
     if(xPlus>=w) xPlus=w-1;
@@ -48,7 +48,7 @@ __device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, 
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     int xMinus = x - 1;
     if(xMinus<0) xMinus=0;
@@ -69,7 +69,7 @@ __device__ __forceinline__ void l2norm(float *imgIn, float *imgOut, int w, int h
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
-    if(x>w || y>h) return;
+    if(x>=w || y>=h) return;
 
     float c=0;
 
