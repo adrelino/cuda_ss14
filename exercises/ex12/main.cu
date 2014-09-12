@@ -33,14 +33,14 @@ void gammaCPU(float *imgIn, float *imgOut, size_t n, float gamma){
     }
 }
 
-__global__ void gammaGPU(float *imgIn, float *imgOut, size_t pw, size_t h, size_t nc, float gamma){
+__global__ void gammaGPU(float *imgIn, float *imgOut, size_t pw, size_t w, size_t h, size_t nc, float gamma){
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
 
     if (x>=pw || y>=h) return;
 
     for(int c=0; c<nc; c++){
-        imgOut[x+y*pw+c*h*pw]=powf(imgIn[x+y*pw+c*h*pw],gamma);
+        imgOut[x+y*w+c*h*w]=powf(imgIn[x+y*w+c*h*w],gamma);
     }
 }
 
@@ -216,7 +216,7 @@ int main(int argc, char **argv)
 
     	dim3 block = dim3(32,4,1);
     	dim3 grid = dim3((w + block.x - 1 ) / block.x, (h + block.y - 1 ) / block.y, 1);
-    	gammaGPU <<<grid,block>>> (d_imgIn, d_imgOut, pw, h, nc, gamma);
+    	gammaGPU <<<grid,block>>> (d_imgIn, d_imgOut, pw, w, h, nc, gamma);
     	CUDA_CHECK;
     	cudaDeviceSynchronize();
     	
@@ -244,7 +244,7 @@ int main(int argc, char **argv)
 
     // show output image: first convert to interleaved opencv format from the layered raw array
     convert_layered_to_mat(mOut, imgOut);
-    showImage("Output", mOut, 100+w+40, 100);
+    showImage("Output", mOut, 100, 100);
 
     // ### Display your own output images here as needed
 
