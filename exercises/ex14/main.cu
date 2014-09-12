@@ -24,43 +24,43 @@
 //#include <stdio.h>
 using namespace std;
 
+__host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, float eps){
+    if(functionType == 1) //G_CONSTANT_1){
+        (*g) = 1.0f;
+    else if(functionType == 2) //G_INVERSE){
+        (*g) = (1.0f / max(eps,s)); //eps 
+    else if(functionType == 3) //G_EXP){
+        (*g)= (expf( -powf(s,2.0) / eps ) / eps); //eps
+    else
+        (*g)=1.0;
+}
+
+__global__ void computeDiffusivity(float *d_dx, float *d_dy, float *g, int w, int h, int nc) {
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdy.y + blockDim.y * blockIdx.y;
+
+  if (x >= w || y >= h)
+    return;
+
+  float val_norm = 0.0f;
+  for (int c = 0; c < nc; ++c)
+    val_norm += d_dx[x + y*w + c*w*h] * d_dx[x + y*w + c*w*h] +
+      d_dy[x + y*w + c*w*h] * d_dy[x + y*w + c*w*h];
+
+}
+
+__global__ void denoiseJacobi(float *d_imgIn, float *d_imgOut, float *d_dx, float *d_dy,
+			int w, int h, int nc) {
+ }
+
 // uncomment to use the camera
 //#define CAMERA
-
-void gammaCPU(float *imgIn, float *imgOut, size_t n, float gamma){
-    for(size_t i=0;i<n;i++){
-       imgOut[i]=powf(imgIn[i],gamma);
-    }
-}
-
-__global__ void gammaGPU(float *imgIn, float *imgOut, size_t pw, size_t w, size_t h, size_t nc, float gamma){
-    int x = threadIdx.x + blockDim.x * blockIdx.x;
-    int y = threadIdx.y + blockDim.y * blockIdx.y;
-
-    if (x>=w || y>=h) return;
-
-    for(int c=0; c<nc; c++){
-        imgOut[x+y*pw+c*h*pw]=powf(imgIn[x+y*pw+c*h*pw],gamma);
-    }
-}
-
-float GetAverage(float dArray[], int iSize) {
-    float dSum = dArray[0];
-    for (int i = 1; i < iSize; ++i) {
-        dSum += dArray[i];
-    }
-    return dSum/iSize;
-}
-
 int main(int argc, char **argv)
 {
     // Before the GPU can process your kernels, a so called "CUDA context" must be initialized
     // This happens on the very first call to a CUDA function, and takes some time (around half a second)
     // We will do it right here, so that the run time measurements are accurate
     cudaDeviceSynchronize();  CUDA_CHECK;
-
-
-
 
     // Reading command line parameters:
     // getParam("param", var, argc, argv) looks whether "-param xyz" is specified, and if so stores the value "xyz" in "var"
@@ -87,10 +87,17 @@ int main(int argc, char **argv)
     getParam("gray", gray, argc, argv);
     cout << "gray: " << gray << endl;
 
-    // ### Define your own parameters here as needed    
-    float gamma=0.5f;
-    getParam("gamma", gamma, argc, argv);
-    cout << "gamma: " << gamma << endl;
+    float sigma = 0.1;
+    getParam("sigma", sigma, argc, argv);
+    cout << "sigma: " << sigma << endl;
+
+    int N = 200;
+    getParam("N", N, argc, argv);
+    cout << "Iterations N: " << N << endl;
+
+    float lambda = 0.5f;
+    getParam("lambda", lambda, argc, argv);
+    cout << "Lambda : " << lambda << endl;
 
     // Init camera / Load input image
 #ifdef CAMERA
@@ -125,9 +132,6 @@ int main(int argc, char **argv)
     int nc = mIn.channels();  // number of channels
     cout << "image: " << w << " x " << h << endl;
 
-
-
-
     // Set the output image format
     // ###
     // ###
@@ -138,9 +142,6 @@ int main(int argc, char **argv)
     //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
     //cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
     // ### Define your own output images here as needed
-
-
-
 
     // Allocate arrays
     // input/output image width: w
@@ -154,9 +155,6 @@ int main(int argc, char **argv)
 
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
     float *imgOut = new float[(size_t)w*h*mOut.channels()];
-
-
-
 
     // For camera mode: Make a loop to read in camera frames
 #ifdef CAMERA
@@ -179,72 +177,41 @@ int main(int argc, char **argv)
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered (imgIn, mIn);
 
+    // COMPUTATION
+    cv::Mat mNoisy = mIn.clone();
+    addNoise(mNoisy, sigma);
+
+    float *d_imgIn, *d_imgOut;
+    float *d_dx, float *d_dy;
+
+    for (int i = 0; i < repeats; ++i) {
+      cudaMalloc(d_imgIn, n * sizeof(float)); CUDA_CHECK;
+      cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      cudaMalloc(d_imgOut, n * sizeof(float)); CUDA_CHECK;
+
+      // call the kernels
+      gradient(d_imgIn, d_dx, d_dy, w, h, nc); CUDA_CHECK;
+      cudaDeviceSynchronize();
 
 
 
-    
-    float *tc, *tg, *tg2;
-    tc=(float*)malloc(repeats * sizeof(float));
-    tg=(float*)malloc(repeats * sizeof(float));
-    tg2=(float*)malloc(repeats * sizeof(float));
-    
-    for(int i=0;i<repeats;i++){
-    	//CPU:
-    	Timer timercpu, timergpu, timergpu2; timercpu.start();
-    	
-    	gammaCPU(imgIn,imgOut,n,gamma);
-    	
-    	timercpu.end();  
-    	tc[i] = timercpu.get();  // elapsed time in seconds
+      cudaMalloc(d_dx, n * sizeof(float)); CUDA_CHECK;
+      cudaMalloc(d_dy, n * sizeof(float)); CUDA_CHECK;
 
-    	//GPU:
-    	timergpu.start();
-    	
-    	float *d_imgIn, *d_imgOut;
-        size_t pitchImgIn, pitchImgOut;
-	
-    	cudaMallocPitch(&d_imgIn, &pitchImgIn, w * sizeof(float), h*nc);
-    	CUDA_CHECK;
-    	cudaMemcpy2D(d_imgIn, pitchImgIn, imgIn, w * sizeof(float), w * sizeof(float), h*nc, cudaMemcpyHostToDevice);
-    	CUDA_CHECK;
-	
-    	cudaMallocPitch(&d_imgOut, &pitchImgOut, w * sizeof(float), h*nc);
-    	CUDA_CHECK;
-        size_t pw=pitchImgIn / sizeof(float);
-    	
-    	timergpu2.start();
-
-    	dim3 block = dim3(32,4,1);
-    	dim3 grid = dim3((w + block.x - 1 ) / block.x, (h + block.y - 1 ) / block.y, 1);
-    	gammaGPU <<<grid,block>>> (d_imgIn, d_imgOut, pw, w, h, nc, gamma);
-    	CUDA_CHECK;
-    	cudaDeviceSynchronize();
-    	
-    	timergpu2.end();
-    	tg2[i] = timergpu2.get();
-    	
-    	CUDA_CHECK;
-    	cudaMemcpy2D(imgOut, w * sizeof(float), d_imgOut, pitchImgOut, w * sizeof(float), h*nc, cudaMemcpyDeviceToHost);
-    	CUDA_CHECK;
-    	cudaFree(d_imgOut);
-    	CUDA_CHECK;
-    	cudaFree(d_imgIn);
-    	CUDA_CHECK;
-    	
-    	timergpu.end();  
-    	tg[i] = timergpu.get();  // elapsed time in seconds
+      cudaFree(d_imgIn); CUDA_CHECK;
+      cudaFree(d_dx); CUDA_CHECK;
+      cudaFree(d_dy); CUDA_CHECK;
     }
     
-    cout << "avg time cpu: " << GetAverage(tc, repeats)*1000 << " ms" << endl;
-    cout << "avg time gpu: " << GetAverage(tg, repeats)*1000 << " ms" << endl;
-    cout << "avg time gpu allocfree: " << GetAverage(tg2, repeats)*1000 << " ms" << endl;
-
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
+    showImage("Noisy", mNoisy, 100+w+40, 100);
+
     // show output image: first convert to interleaved opencv format from the layered raw array
     convert_layered_to_mat(mOut, imgOut);
-    showImage("Output", mOut, 100+40, 100);
+    showImage("Result", mOut, 100+2*w+40, 100);
 
     // ### Display your own output images here as needed
 
@@ -255,7 +222,6 @@ int main(int argc, char **argv)
     // wait for key inputs
     cv::waitKey(0);
 #endif
-
     // save input and result
     cv::imwrite("image_input.png",mIn*255.f);  // "imwrite" assumes channel range [0,255]
     cv::imwrite("image_result.png",mOut*255.f);

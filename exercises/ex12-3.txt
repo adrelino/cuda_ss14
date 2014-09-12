@@ -1,0 +1,19 @@
+./ex3/main -i "../images/tum_odd.jpg" -repeats 200
+repeats: 200
+gray: 0
+gamma: 0.5
+image: 1613 x 1200
+avg time cpu: 125.7 ms
+avg time gpu: 34.45 ms
+avg time gpu allocfree: 5.95 ms
+
+----------
+
+./ex12/main -i "../images/tum_odd.jpg" -repeats 200
+repeats: 200
+gray: 0
+gamma: 0.5
+image: 1613 x 1200
+avg time cpu: 126.6 ms
+avg time gpu: 34.55 ms
+avg time gpu allocfree: 6.35 ms
