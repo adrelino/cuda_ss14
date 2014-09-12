@@ -23,7 +23,7 @@
 
 
 //                       in             out      out
-__device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+__device__ __forceinline__ void d_gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -43,8 +43,12 @@ __device__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int
     }
 }
 
+__global__ __forceinline__ void gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
+    d_gradient(imgIn, v1, v2, w, h, nc);
+}
+
 //                         in        in         out
-__device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
+__device__ __forceinline__ void d_divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -58,6 +62,10 @@ __device__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, 
         if(y>0) backv2_y -=v2[x+ (y-1)*w + i*w*h];
         imgOut[x+ y*w +i*w*h]=backv1_x+backv2_y;
     }
+}
+
+__global__ __forceinline__ void divergence(float *v1, float *v2, float *imgOut, int w, int h, int nc){
+    d_divergence(v1, v2, imgOut, w, h, nc);
 }
 
 //                     in           out
@@ -80,7 +88,7 @@ __device__ __forceinline__ void l2norm(float *imgIn, float *imgOut, int w, int h
 }
 
 
-__device__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
+__device__ __forceinline__ void d_convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     size_t k = kernelSize;
@@ -115,6 +123,12 @@ __device__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, floa
         imgOut[x+w*y+w*h*c]=sum;
     }
 }
+
+__global__ __forceinline__ void convolutionGPU(float *imgIn, float *kernel, float *imgOut, int w, int h, int nc, int kernelSize){
+    d_convolutionGPU(imgIn, kernel, imgOut, w, h, nc, kernelSize);
+}
+
+
 
 
 __device__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d_dx, float *d_dy, int w, int h, int nc) {
@@ -210,9 +224,9 @@ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lam
 
   //only calculating the first column of 
   //[eig1 | x*eig1]=A-lambda2*I;
-  e1->x=m.x-lambda2;
-  //[eig2 | x*eig2]=A-lambda1*I;
-  e2->x=m.x-lambda1;
+  // e1->x=m.x-lambda2;
+  // //[eig2 | x*eig2]=A-lambda1*I;
+  // e2->x=m.x-lambda1;
 
   e1->y=m.z; //same for both, since -I*lambda is 0 at the off diagonals   //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
   e2->y=m.z;   //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
