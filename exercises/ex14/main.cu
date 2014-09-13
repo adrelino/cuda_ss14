@@ -66,7 +66,48 @@ __global__ void computeDiffusivity(float *d_dx, float *d_dy, float *g, int w, in
 // f is input image
 // u is current iteration step
 // ui is the resulting iteration
-__global__ void computeUpdateStep(float *f, float *u, float *g, float *ui, int w, int h, int nc, float lambda) {
+__global__ void computeUpdateSOR(float *f, float *u, float *g, float *ui, int w, int h, int nc, float lambda, bool red, float theta) {
+  // compute gr, gl, gu and gd
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdx.y + blockDim.y * blockIdx.y;
+
+  // do red/black update scheme
+  if (red && ((x+y) % 2) == 1)
+    return;
+
+  if (!red && ((x+y) % 2) == 0)
+    return;
+
+  if (x >= w || y >= h)
+    return;
+
+  float gr = (x+1 < w) ? g[x + y*w] : 0.0f;
+  float gl = (x > 0) ? g[(x-1) + y*w] : 0.0f;
+  float gu = (y+1 < h) ? g[x + y*w] : 0.0f;
+  float gd = (y > 0) ? g[x + (y-1)*w] : 0.0f;
+
+
+  // do clamping for u  
+  int xPlus1 = min(x+1,w-1);
+  int yPlus1 = min(y+1,h-1);
+  int xMinus1 = max(x-1,0);
+  int yMinus1 = max(y-1,0);
+
+  // update u using SOR relaxation
+  for (int c = 0; c < nc; ++c) {
+    float u_old = u[x + y*w + c*w*h];
+    
+    float u_new = (2*f[x + y*w + c*w*h] +
+		  lambda * gr * u[xPlus1 + y*w + c*w*h] +
+		  lambda * gl * u[xMinus1 + y*w + c*w*h] +
+		  lambda * gu * u[x + yPlus1*w + c*w*h] +
+		  lambda * gd * u[x + yMinus1*w + c*w*h]) / (2 + lambda * (gr + gl + gu + gd));
+    
+    u[x + y*w + c*w*h] = u_new + theta * (u_new - u_old);
+  }  
+}
+
+__global__ void computeUpdateJacobi(float *f, float *u, float *g, float *ui, int w, int h, int nc, float lambda) {
   // compute gr, gl, gu and gd
   int x = threadIdx.x + blockDim.x * blockIdx.x;
   int y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -134,7 +175,6 @@ int main(int argc, char **argv)
     getParam("sigma", sigma, argc, argv);
     cout << "sigma: " << sigma << endl;
 
-    // int N = 200;    
     int N = 200;
     getParam("N", N, argc, argv);
     cout << "Iterations N: " << N << endl;
@@ -151,6 +191,29 @@ int main(int argc, char **argv)
     getParam("delay", delay, argc, argv);
     cout << "Delay: " << delay << endl;
 
+    bool useJacobi = true;
+    int method = 0;
+    getParam("method", method, argc, argv);
+    if (method == 0)
+      useJacobi = true;
+    else
+      useJacobi = false;
+    
+    cout << "Use jacobi method" << useJacobi << endl;
+
+    float theta = 0.9;
+    getParam("theta", theta, argc, argv);
+
+    if (theta < 0) {
+      cout << "theta too small - should be in [0,1). Setting it to zero." << endl;
+      theta = 0.0f;
+    }
+    else if (theta > 0.98f) {
+      cout << "theta too big - should be in [0,1). Setting it to 0.98." << endl;
+      theta = 0.98f;
+    }
+    cout << "Theta: " << theta << endl;
+    
     // Init camera / Load input image
 #ifdef CAMERA
 
@@ -282,7 +345,19 @@ int main(int argc, char **argv)
 	cudaDeviceSynchronize(); CUDA_CHECK;
 
 	// compute update step
-	computeUpdateStep<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda); CUDA_CHECK;
+	if (useJacobi) {
+	  computeUpdateJacobi<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda); CUDA_CHECK;
+	  
+	} else {
+	  // do first the red update step
+	  computeUpdateSOR<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda, true, theta); CUDA_CHECK;
+	  
+	  cudaDeviceSynchronize(); CUDA_CHECK;
+
+	  // then the black update step
+	  computeUpdateSOR<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda, false, theta); CUDA_CHECK;
+	  
+	}
 	cudaDeviceSynchronize(); CUDA_CHECK;
 
 	// copy stuff back to display step
