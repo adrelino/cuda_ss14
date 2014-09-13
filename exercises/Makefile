@@ -45,8 +45,8 @@ ex12: ex12/main.cu aux.cu aux.h Makefile
 ex13_bonus: ex13_bonus/main.cu aux.cu aux.h opencv_helpers.cpp opencv_helpers.h Makefile
 	nvcc -o ex13_bonus/main ex13_bonus/main.cu aux.cu opencv_helpers.cpp --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core -lopencv_imgproc
 
-ex14: ex14/main.cu aux.cu aux.h Makefile
-	nvcc -o ex14/main ex14/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core
+ex14: ex14/main.cu aux.cu aux.h opencv_helpers.h Makefile
+	nvcc -o ex14/main ex14/main.cu aux.cu opencv_helpers.cpp --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core -lopencv_imgproc
 
 ex15: ex15/main.cu aux.cu aux.h Makefile
 	nvcc -o ex15/main ex15/main.cu aux.cu --ptxas-options=-v --use_fast_math --compiler-options -Wall -lopencv_highgui -lopencv_core -lcublas
