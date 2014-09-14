@@ -232,7 +232,7 @@ int main(int argc, char **argv)
     getParam("lambda", lambda, argc, argv);
     cout << "Lambda : " << lambda << endl;
 
-    float eps = 0.01;
+    float eps = 0.001;
     getParam("eps", eps, argc, argv);
     cout << "eps: " << eps << endl;
 
@@ -247,10 +247,10 @@ int main(int argc, char **argv)
       useJacobi = true;
     else
       useJacobi = false;
-    
+
     cout << "Use jacobi method: " << (useJacobi ? "True" : "False") << endl;
 
-    float theta = 0.9;
+    float theta = 0.7;
     getParam("theta", theta, argc, argv);
 
     if (theta < 0) {
@@ -262,6 +262,10 @@ int main(int argc, char **argv)
       theta = 0.98f;
     }
     cout << "Theta: " << theta << endl;
+
+    // TODO: add param
+    float convergenceEps = powf(10, -5);
+    
     
     // Init camera / Load input image
 #ifdef CAMERA
@@ -373,12 +377,12 @@ int main(int argc, char **argv)
 
     // GPU COMPUTATION
     float *d_imgIn, *d_imgOut;
-    float *d_imgCur;
+    float *d_imgCur, *d_imgLastIteration;
     float *d_dx, *d_dy;
     float *d_diffusivity;
 
-    cv::Mat lastIteration;
-    float curImgEnergy;
+    float curImgEnergy = 0.0f;
+    float lastImgEnergy = 0.0f;
     
     for (int i = 0; i < repeats; ++i) {
       cudaMalloc(&d_imgIn, n * sizeof(float)); CUDA_CHECK;
@@ -387,6 +391,9 @@ int main(int argc, char **argv)
       // u0 = imgIn;
       cudaMalloc(&d_imgCur, n * sizeof(float)); CUDA_CHECK;
       cudaMemcpy(d_imgCur, imgNoisy, n * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
+
+      cudaMalloc(&d_imgLastIteration, n * sizeof(float)); CUDA_CHECK;
+      cudaMemset(d_imgLastIteration, 0, n * sizeof(float)); CUDA_CHECK;
 
       cudaMalloc(&d_dx, n * sizeof(float)); CUDA_CHECK;
       cudaMalloc(&d_dy, n * sizeof(float)); CUDA_CHECK;
@@ -400,6 +407,8 @@ int main(int argc, char **argv)
       
       // call the kernels
       for (int j = 0; j < N; ++j) {
+	cudaMemcpy(d_imgLastIteration, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToDevice); CUDA_CHECK;
+	
 	gradient<<<gridSize, blockSize>>>(d_imgCur, d_dx, d_dy, w, h, nc); CUDA_CHECK;
 	cudaDeviceSynchronize(); CUDA_CHECK;
 
@@ -425,18 +434,21 @@ int main(int argc, char **argv)
 
 	// copy stuff back to display step
 	cudaMemcpy(imgCur, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-	//cudaMemcpy(imgDiffusivity, d_diffusivity, w * h * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
 	cout << "Iteration: " << j << endl;
 	
-	// convert_layered_to_mat(mDiffusivity, imgDiffusivity);
-
-	// showImage("u^i", mCur, 100, 100 + h + 40);
-	// imagesc("Diffusivity", mDiffusivity, 100+2*w+40, 100);
-
 	// check how much energy changed in the current iteration
 	cublasStat = calcImageEnergy(cublasHandle, imgCur, n, &curImgEnergy); cublas_check(cublasStat);
-	cout << "Iteration " << j << " - current image energy: " << curImgEnergy << endl;
+
+	// check for convergence
+	float energyChange = abs(curImgEnergy - lastImgEnergy) / curImgEnergy;
+	cout << "Iteration " << j << " - current image energy: " << curImgEnergy << " - energy change: " << energyChange << endl;
+	lastImgEnergy = curImgEnergy;
+
+	if (energyChange < convergenceEps) {
+	  cout << "Reached convergence bound - no more visible change" << endl;
+	  break;
+	}
 	// // pause a little bit
 	// char key = cv::waitKey(delay);
 	// if (static_cast<int>(key) == 27)
