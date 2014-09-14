@@ -103,6 +103,30 @@ void showImage(string title, const cv::Mat &mat, int x, int y)
     cv::imshow(wTitle, mat);
 }
 
+void showHistogram256(const char *windowTitle, int *histogram, int windowX, int windowY)
+{
+  const int nbins = 256;
+  cv::Mat canvas = cv::Mat::ones(125, 512, CV_8UC3);
+
+  float hmax = 0;
+  for(int i = 0; i < nbins; ++i)
+    hmax = max((int)hmax, histogram[i]);
+
+  for (int j = 0, rows = canvas.rows; j < nbins-1; j++)
+  {
+    for(int i = 0; i < 2; ++i)
+      cv::line(
+        canvas, 
+        cv::Point(j*2+i, rows), 
+        cv::Point(j*2+i, rows - (histogram[j] * 125.0f) / hmax), 
+        cv::Scalar(255,128,0), 
+        1, 8, 0
+        );
+  }
+
+  showImage(windowTitle, canvas, windowX, windowY);
+}
+
 
 
 
