@@ -209,14 +209,13 @@ int main(int argc, char **argv)
 
         stat=cublasSetVector(length, sizeof(*input), input, 1, d_cublas, 1);cublas_check(stat);
 
+
+        stat = cublasSasum(handle, length, d_cublas, 1, cublasout);cublas_check(stat);
+
         timercublas.end();
         tcu[i] = timercublas.get();
 
-        stat = cublasSasum(handle, length, d_cublas, 1, cublasout);cublas_check(stat);      
-
         cublasDestroy(handle);
-
-
 
         cudaMemcpy(middle, d_middle, length * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
         cudaMemcpy(output, d_output, length * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;

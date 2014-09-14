@@ -25,6 +25,7 @@
 
 #include "common_kernels.cuh"
 #include "opencv_helpers.h"
+#include "cublas_v2.h"
 
 using namespace std;
 
@@ -136,7 +137,55 @@ __global__ void computeUpdateJacobi(float *f, float *u, float *g, float *ui, int
 		  lambda * gd * u[x + yMinus1*w + c*w*h]) / (2 + lambda * (gr + gl + gu + gd));
   }
 }
- 
+
+string get_cublas_error(cublasStatus_t stat) {
+  switch(stat)
+    {
+    case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
+    case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
+    case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
+    case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE"; 
+    case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH"; 
+    case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
+    case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED"; 
+    case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR"; 
+    }
+
+  return "Unknown error";
+}
+
+void cublas_check(cublasStatus_t stat) {
+  if (stat != CUBLAS_STATUS_SUCCESS) {
+    cerr << "Received error: " << get_cublas_error(stat) << endl;
+    exit(1);
+  }
+}
+
+cublasStatus_t calcImageEnergy(cublasHandle_t &handle, float *img, size_t len, float *res) {
+  cublasStatus_t stat;
+
+  stat = cublasCreate(&handle);
+  cublas_check(stat);
+
+  float *d_cublasImg;
+  cudaMalloc(&d_cublasImg, len * sizeof(float)); CUDA_CHECK;
+  cudaMemset(d_cublasImg, 0, len * sizeof(float)); CUDA_CHECK;
+
+  float *cublasResult = new float[len];
+
+  // fill vector
+  stat = cublasSetVector(len, sizeof(*img), img, 1, d_cublasImg, 1); cublas_check(stat);
+  // sum it
+  stat = cublasSasum(handle, len, d_cublasImg, 1, cublasResult); cublas_check(stat);
+
+  *res = cublasResult[0];
+
+  delete[] cublasResult;
+  cudaFree(d_cublasImg);
+
+  return stat;
+}
+
 // uncomment to use the camera
 //#define CAMERA
 int main(int argc, char **argv)
@@ -199,7 +248,7 @@ int main(int argc, char **argv)
     else
       useJacobi = false;
     
-    cout << "Use jacobi method" << useJacobi << endl;
+    cout << "Use jacobi method: " << (useJacobi ? "True" : "False") << endl;
 
     float theta = 0.9;
     getParam("theta", theta, argc, argv);
@@ -310,13 +359,27 @@ int main(int argc, char **argv)
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
     showImage("Noisy", mNoisy, 100+w+40, 100);
-    
+
+    cublasStatus_t cublasStat;
+    cublasHandle_t cublasHandle;
+
+    cublasStat = cublasCreate(&cublasHandle);
+    cublas_check(cublasStat);
+
+    float imgEnergyNoisy;
+    cublasStat = calcImageEnergy(cublasHandle, imgNoisy, n, &imgEnergyNoisy); cublas_check(cublasStat);
+
+    cout << "Initial noisy image energy: " << imgEnergyNoisy << endl;
+
     // GPU COMPUTATION
     float *d_imgIn, *d_imgOut;
     float *d_imgCur;
     float *d_dx, *d_dy;
     float *d_diffusivity;
 
+    cv::Mat lastIteration;
+    float curImgEnergy;
+    
     for (int i = 0; i < repeats; ++i) {
       cudaMalloc(&d_imgIn, n * sizeof(float)); CUDA_CHECK;
       cudaMemcpy(d_imgIn, imgNoisy, n * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
@@ -362,15 +425,18 @@ int main(int argc, char **argv)
 
 	// copy stuff back to display step
 	cudaMemcpy(imgCur, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-	cudaMemcpy(imgDiffusivity, d_diffusivity, w * h * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+	//cudaMemcpy(imgDiffusivity, d_diffusivity, w * h * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
 	cout << "Iteration: " << j << endl;
-	// convert_layered_to_mat(mCur, imgCur);
+	
 	// convert_layered_to_mat(mDiffusivity, imgDiffusivity);
-	// cout << "Iteration " << j << endl;
+
 	// showImage("u^i", mCur, 100, 100 + h + 40);
 	// imagesc("Diffusivity", mDiffusivity, 100+2*w+40, 100);
 
+	// check how much energy changed in the current iteration
+	cublasStat = calcImageEnergy(cublasHandle, imgCur, n, &curImgEnergy); cublas_check(cublasStat);
+	cout << "Iteration " << j << " - current image energy: " << curImgEnergy << endl;
 	// // pause a little bit
 	// char key = cv::waitKey(delay);
 	// if (static_cast<int>(key) == 27)
@@ -414,6 +480,9 @@ int main(int argc, char **argv)
     delete[] imgDx;
     delete[] imgDy;
     delete[] imgDiffusivity;
+
+    // destroy cublas handle
+    cublasDestroy(cublasHandle);
 
     // close all opencv windows
     cvDestroyAllWindows();
