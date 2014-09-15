@@ -22,6 +22,11 @@
 #include <iostream>
 #include <math.h>
 //#include <stdio.h>
+
+#include "common_kernels.cuh"
+#include "opencv_helpers.h"
+#include "cublas_v2.h"
+
 using namespace std;
 
 __host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, float eps){
@@ -35,23 +40,151 @@ __host__ __device__ void g_hat_diffusivity(float s, float* g, int functionType, 
         (*g)=1.0;
 }
 
-__global__ void computeDiffusivity(float *d_dx, float *d_dy, float *g, int w, int h, int nc) {
+__global__ void computeDiffusivity(float *d_dx, float *d_dy, float *g, int w, int h, int nc, float eps) {
   int x = threadIdx.x + blockDim.x * blockIdx.x;
-  int y = threadIdy.y + blockDim.y * blockIdx.y;
+  int y = threadIdx.y + blockDim.y * blockIdx.y;
 
   if (x >= w || y >= h)
     return;
 
-  float val_norm = 0.0f;
-  for (int c = 0; c < nc; ++c)
-    val_norm += d_dx[x + y*w + c*w*h] * d_dx[x + y*w + c*w*h] +
-      d_dy[x + y*w + c*w*h] * d_dy[x + y*w + c*w*h];
+  float s=0;
+  for (int i = 0; i < nc; ++i)
+    {
+      int ind=x+ y*w +i*w*h;
+      float dxu=d_dx[ind];
+      s+=dxu*dxu;
+      float dyu=d_dx[ind];
+      s+=dyu*dyu;
+    }
+  s=sqrtf(s); //we dont use the squared norm, so take root  
 
+  // now compute diffusivity
+  float g_cur;
+  g_hat_diffusivity(s, &g_cur, 2, eps);
+  g[x + y*w] = g_cur;
 }
 
-__global__ void denoiseJacobi(float *d_imgIn, float *d_imgOut, float *d_dx, float *d_dy,
-			int w, int h, int nc) {
- }
+// f is input image
+// u is current iteration step
+// ui is the resulting iteration
+__global__ void computeUpdateSOR(float *f, float *u, float *g, float *ui, int w, int h, int nc, float lambda, bool red, float theta) {
+  // compute gr, gl, gu and gd
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdx.y + blockDim.y * blockIdx.y;
+
+  // do red/black update scheme
+  if (red && ((x+y) % 2) == 1)
+    return;
+
+  if (!red && ((x+y) % 2) == 0)
+    return;
+
+  if (x >= w || y >= h)
+    return;
+
+  float gr = (x+1 < w) ? g[x + y*w] : 0.0f;
+  float gl = (x > 0) ? g[(x-1) + y*w] : 0.0f;
+  float gu = (y+1 < h) ? g[x + y*w] : 0.0f;
+  float gd = (y > 0) ? g[x + (y-1)*w] : 0.0f;
+
+
+  // do clamping for u  
+  int xPlus1 = min(x+1,w-1);
+  int yPlus1 = min(y+1,h-1);
+  int xMinus1 = max(x-1,0);
+  int yMinus1 = max(y-1,0);
+
+  // update u using SOR relaxation
+  for (int c = 0; c < nc; ++c) {
+    float u_old = u[x + y*w + c*w*h];
+    
+    float u_new = (2*f[x + y*w + c*w*h] +
+		  lambda * gr * u[xPlus1 + y*w + c*w*h] +
+		  lambda * gl * u[xMinus1 + y*w + c*w*h] +
+		  lambda * gu * u[x + yPlus1*w + c*w*h] +
+		  lambda * gd * u[x + yMinus1*w + c*w*h]) / (2 + lambda * (gr + gl + gu + gd));
+    
+    u[x + y*w + c*w*h] = u_new + theta * (u_new - u_old);
+  }  
+}
+
+__global__ void computeUpdateJacobi(float *f, float *u, float *g, float *ui, int w, int h, int nc, float lambda) {
+  // compute gr, gl, gu and gd
+  int x = threadIdx.x + blockDim.x * blockIdx.x;
+  int y = threadIdx.y + blockDim.y * blockIdx.y;
+
+  if (x >= w || y >= h)
+    return;
+
+  float gr = (x+1 < w) ? g[x + y*w] : 0.0f;
+  float gl = (x > 0) ? g[(x-1) + y*w] : 0.0f;
+  float gu = (y+1 < h) ? g[x + y*w] : 0.0f;
+  float gd = (y > 0) ? g[x + (y-1)*w] : 0.0f;
+
+
+  // do clamping for u  
+  int xPlus1 = min(x+1,w-1);
+  int yPlus1 = min(y+1,h-1);
+  int xMinus1 = max(x-1,0);
+  int yMinus1 = max(y-1,0);
+
+  // update u
+  for (int c = 0; c < nc; ++c) {
+    u[x + y*w + c*w*h] = (2*f[x + y*w + c*w*h] +
+		  lambda * gr * u[xPlus1 + y*w + c*w*h] +
+		  lambda * gl * u[xMinus1 + y*w + c*w*h] +
+		  lambda * gu * u[x + yPlus1*w + c*w*h] +
+		  lambda * gd * u[x + yMinus1*w + c*w*h]) / (2 + lambda * (gr + gl + gu + gd));
+  }
+}
+
+string get_cublas_error(cublasStatus_t stat) {
+  switch(stat)
+    {
+    case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
+    case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
+    case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
+    case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE"; 
+    case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH"; 
+    case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
+    case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED"; 
+    case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR"; 
+    }
+
+  return "Unknown error";
+}
+
+void cublas_check(cublasStatus_t stat) {
+  if (stat != CUBLAS_STATUS_SUCCESS) {
+    cerr << "Received error: " << get_cublas_error(stat) << endl;
+    exit(1);
+  }
+}
+
+cublasStatus_t calcImageEnergy(cublasHandle_t &handle, float *img, size_t len, float *res) {
+  cublasStatus_t stat;
+
+  stat = cublasCreate(&handle);
+  cublas_check(stat);
+
+  float *d_cublasImg;
+  cudaMalloc(&d_cublasImg, len * sizeof(float)); CUDA_CHECK;
+  cudaMemset(d_cublasImg, 0, len * sizeof(float)); CUDA_CHECK;
+
+  float *cublasResult = new float[len];
+
+  // fill vector
+  stat = cublasSetVector(len, sizeof(*img), img, 1, d_cublasImg, 1); cublas_check(stat);
+  // sum it
+  stat = cublasSasum(handle, len, d_cublasImg, 1, cublasResult); cublas_check(stat);
+
+  *res = cublasResult[0];
+
+  delete[] cublasResult;
+  cudaFree(d_cublasImg);
+
+  return stat;
+}
 
 // uncomment to use the camera
 //#define CAMERA
@@ -99,6 +232,41 @@ int main(int argc, char **argv)
     getParam("lambda", lambda, argc, argv);
     cout << "Lambda : " << lambda << endl;
 
+    float eps = 0.001;
+    getParam("eps", eps, argc, argv);
+    cout << "eps: " << eps << endl;
+
+    int delay = 1;
+    getParam("delay", delay, argc, argv);
+    cout << "Delay: " << delay << endl;
+
+    bool useJacobi = true;
+    int method = 0;
+    getParam("method", method, argc, argv);
+    if (method == 0)
+      useJacobi = true;
+    else
+      useJacobi = false;
+
+    cout << "Use jacobi method: " << (useJacobi ? "True" : "False") << endl;
+
+    float theta = 0.7;
+    getParam("theta", theta, argc, argv);
+
+    if (theta < 0) {
+      cout << "theta too small - should be in [0,1). Setting it to zero." << endl;
+      theta = 0.0f;
+    }
+    else if (theta > 0.98f) {
+      cout << "theta too big - should be in [0,1). Setting it to 0.98." << endl;
+      theta = 0.98f;
+    }
+    cout << "Theta: " << theta << endl;
+
+    // TODO: add param
+    float convergenceEps = powf(10, -5);
+    
+    
     // Init camera / Load input image
 #ifdef CAMERA
 
@@ -139,6 +307,11 @@ int main(int argc, char **argv)
     // ###
     // ###
     cv::Mat mOut(h,w,mIn.type());  // mOut will have the same number of channels as the input image, nc layers
+    cv::Mat mCur(h,w,mIn.type());
+    cv::Mat mDx(h, w, mIn.type());
+    cv::Mat mDy(h, w, mIn.type());
+    cv::Mat mDiffusivity(h, w, CV_32FC1);
+
     //cv::Mat mOut(h,w,CV_32FC3);    // mOut will be a color image, 3 layers
     //cv::Mat mOut(h,w,CV_32FC1);    // mOut will be a grayscale image, 1 layer
     // ### Define your own output images here as needed
@@ -151,8 +324,12 @@ int main(int argc, char **argv)
 
     // allocate raw input image array
     size_t n = (size_t)w*h*nc;
-    float *imgIn  = new float[(size_t)w*h*nc];
-
+    float *imgIn  = new float[n];
+    float *imgCur  = new float[n];
+    float *imgDx = new float[n];
+    float *imgDy = new float[n];
+    float *imgDiffusivity = new float[w * h];
+    
     // allocate raw output array (the computation result will be stored in this array, then later converted to mOut for displaying)
     float *imgOut = new float[(size_t)w*h*mOut.channels()];
 
@@ -177,43 +354,123 @@ int main(int argc, char **argv)
     // So we will convert as necessary, using interleaved "cv::Mat" for loading/saving/displaying, and layered "float*" for CUDA computations
     convert_mat_to_layered (imgIn, mIn);
 
-    // COMPUTATION
     cv::Mat mNoisy = mIn.clone();
     addNoise(mNoisy, sigma);
+    float *imgNoisy = new float[n];
+    convert_mat_to_layered(imgNoisy, mNoisy);
 
-    float *d_imgIn, *d_imgOut;
-    float *d_dx, float *d_dy;
-
-    for (int i = 0; i < repeats; ++i) {
-      cudaMalloc(d_imgIn, n * sizeof(float)); CUDA_CHECK;
-      cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
-
-      cudaMalloc(d_imgOut, n * sizeof(float)); CUDA_CHECK;
-
-      // call the kernels
-      gradient(d_imgIn, d_dx, d_dy, w, h, nc); CUDA_CHECK;
-      cudaDeviceSynchronize();
-
-
-
-      cudaMalloc(d_dx, n * sizeof(float)); CUDA_CHECK;
-      cudaMalloc(d_dy, n * sizeof(float)); CUDA_CHECK;
-
-      cudaFree(d_imgIn); CUDA_CHECK;
-      cudaFree(d_dx); CUDA_CHECK;
-      cudaFree(d_dy); CUDA_CHECK;
-    }
-    
     // show input image
     showImage("Input", mIn, 100, 100);  // show at position (x_from_left=100,y_from_above=100)
 
     showImage("Noisy", mNoisy, 100+w+40, 100);
 
+    cublasStatus_t cublasStat;
+    cublasHandle_t cublasHandle;
+
+    cublasStat = cublasCreate(&cublasHandle);
+    cublas_check(cublasStat);
+
+    float imgEnergyNoisy;
+    cublasStat = calcImageEnergy(cublasHandle, imgNoisy, n, &imgEnergyNoisy); cublas_check(cublasStat);
+
+    cout << "Initial noisy image energy: " << imgEnergyNoisy << endl;
+
+    // GPU COMPUTATION
+    float *d_imgIn, *d_imgOut;
+    float *d_imgCur, *d_imgLastIteration;
+    float *d_dx, *d_dy;
+    float *d_diffusivity;
+
+    float curImgEnergy = 0.0f;
+    float lastImgEnergy = 0.0f;
+    
+    for (int i = 0; i < repeats; ++i) {
+      cudaMalloc(&d_imgIn, n * sizeof(float)); CUDA_CHECK;
+      cudaMemcpy(d_imgIn, imgNoisy, n * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
+
+      // u0 = imgIn;
+      cudaMalloc(&d_imgCur, n * sizeof(float)); CUDA_CHECK;
+      cudaMemcpy(d_imgCur, imgNoisy, n * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
+
+      cudaMalloc(&d_imgLastIteration, n * sizeof(float)); CUDA_CHECK;
+      cudaMemset(d_imgLastIteration, 0, n * sizeof(float)); CUDA_CHECK;
+
+      cudaMalloc(&d_dx, n * sizeof(float)); CUDA_CHECK;
+      cudaMalloc(&d_dy, n * sizeof(float)); CUDA_CHECK;
+      
+      cudaMalloc(&d_imgOut, n * sizeof(float)); CUDA_CHECK;
+      // diffusivity just has one channel
+      cudaMalloc(&d_diffusivity, w * h * sizeof(float)); CUDA_CHECK;
+
+      dim3 blockSize(32, 4, 1);
+      dim3 gridSize((w + blockSize.x - 1) / blockSize.x, (h + blockSize.y - 1) / blockSize.y, 1);
+      
+      // call the kernels
+      for (int j = 0; j < N; ++j) {
+	cudaMemcpy(d_imgLastIteration, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToDevice); CUDA_CHECK;
+	
+	gradient<<<gridSize, blockSize>>>(d_imgCur, d_dx, d_dy, w, h, nc); CUDA_CHECK;
+	cudaDeviceSynchronize(); CUDA_CHECK;
+
+	// compute diffusivity
+	computeDiffusivity<<<gridSize, blockSize>>>(d_dx, d_dy, d_diffusivity, w, h, nc, eps); CUDA_CHECK;
+	cudaDeviceSynchronize(); CUDA_CHECK;
+
+	// compute update step
+	if (useJacobi) {
+	  computeUpdateJacobi<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda); CUDA_CHECK;
+	  
+	} else {
+	  // do first the red update step
+	  computeUpdateSOR<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda, true, theta); CUDA_CHECK;
+	  
+	  cudaDeviceSynchronize(); CUDA_CHECK;
+
+	  // then the black update step
+	  computeUpdateSOR<<<gridSize, blockSize>>>(d_imgIn, d_imgCur, d_diffusivity, d_imgCur, w, h, nc, lambda, false, theta); CUDA_CHECK;
+	  
+	}
+	cudaDeviceSynchronize(); CUDA_CHECK;
+
+	// copy stuff back to display step
+	cudaMemcpy(imgCur, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+	cout << "Iteration: " << j << endl;
+	
+	// check how much energy changed in the current iteration
+	cublasStat = calcImageEnergy(cublasHandle, imgCur, n, &curImgEnergy); cublas_check(cublasStat);
+
+	// check for convergence
+	float energyChange = abs(curImgEnergy - lastImgEnergy) / curImgEnergy;
+	cout << "Iteration " << j << " - current image energy: " << curImgEnergy << " - energy change: " << energyChange << endl;
+	lastImgEnergy = curImgEnergy;
+
+	if (energyChange < convergenceEps) {
+	  cout << "Reached convergence bound - no more visible change" << endl;
+	  break;
+	}
+	// // pause a little bit
+	// char key = cv::waitKey(delay);
+	// if (static_cast<int>(key) == 27)
+	//   break;
+      }
+      
+      // copy stuff back
+      cudaMemcpy(imgDx, d_dx, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+      cudaMemcpy(imgDy, d_dy, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      cudaMemcpy(imgOut, d_imgCur, n * sizeof(float), cudaMemcpyDeviceToHost); CUDA_CHECK;
+
+      cudaFree(d_imgIn); CUDA_CHECK;
+      cudaFree(d_dx); CUDA_CHECK;
+      cudaFree(d_dy); CUDA_CHECK;
+      cudaFree(d_diffusivity); CUDA_CHECK;
+    }
+    
+
     // show output image: first convert to interleaved opencv format from the layered raw array
     convert_layered_to_mat(mOut, imgOut);
     showImage("Result", mOut, 100+2*w+40, 100);
-
-    // ### Display your own output images here as needed
 
 #ifdef CAMERA
     // end of camera loop
@@ -229,11 +486,17 @@ int main(int argc, char **argv)
     // free allocated arrays
     delete[] imgIn;
     delete[] imgOut;
+    delete[] imgCur;
+    delete[] imgNoisy;
+
+    delete[] imgDx;
+    delete[] imgDy;
+    delete[] imgDiffusivity;
+
+    // destroy cublas handle
+    cublasDestroy(cublasHandle);
 
     // close all opencv windows
     cvDestroyAllWindows();
     return 0;
 }
-
-
-

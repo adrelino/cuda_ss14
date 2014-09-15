@@ -184,9 +184,15 @@ __global__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, 
     return;
 
   for(int c = 0; c < nc; ++c) {
+    if (c == 0) {
+      d_m11[x + y * w] = d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m12[x + y * w] = d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m22[x + y * w] = d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];      
+    } else {
       d_m11[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
       d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+    }
   }
 }
 
@@ -199,9 +205,15 @@ __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float 
     return;
 
   for(int c = 0; c < nc; ++c) {
+    if (c == 0) {
+      d_m11_12_22[x + y * w] = d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h] = d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h*2] = d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+    } else {
       d_m11_12_22[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m11_12_22[x + y * w + w*h] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-      d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];      
+    }
   }
 }
 
@@ -309,4 +321,3 @@ __host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e
   m->z = v.y * v.x;
   m->w = v.y * v.y;
 }
-
