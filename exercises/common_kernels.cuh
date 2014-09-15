@@ -24,7 +24,7 @@
 using namespace std;
 
 //https://devtalk.nvidia.com/default/topic/487686/how-to-split-cuda-code/  solution !!!
-const float eps=0.000001;
+const float eps=0.00001;
 
 //                       in             out      out
 __device__ __forceinline__ void d_gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
@@ -232,6 +232,76 @@ __host__ __device__ __forceinline__ void unitScale(float2 *v) { //notice e1,2 ar
   }
 }
 
+
+//working eigenvalue computation with all special cases (received with thanks from another group)
+__host__ __device__ void cuda_eig(float a, float b, float c, float d, float *L1, float *L2, float *V1_1, float *V1_2, float *V2_1, float *V2_2)
+{
+    float T = a + d; 
+    float D = a*d - b*c;
+    
+    *L1 = (T/2.0f) + sqrtf(T*T/4.0f - D);
+    *L2 = (T/2.0f) - sqrtf(T*T/4.0f - D);
+
+    if (abs(c) > eps)
+    {
+        if (abs(*L1-d) - abs(c) > 0.0f)
+        {
+            *V1_1 = (*L1-d)/abs(*L1-d);
+            *V1_2 = c/abs(*L1-d);
+        }
+        else
+        {
+            *V1_1 = (*L1-d)/abs(c);
+            *V1_2 = c/abs(c);
+        }
+        if (abs(*L2-d) - abs(c) > 0.0f)
+        {
+            *V2_1 = (*L2-d)/abs(*L2-d);
+            *V2_2 = c/abs(*L2-d);
+        }
+        else
+        {
+            *V2_1 = (*L2-d)/abs(c);
+            *V2_2 = c/abs(c);
+        }
+
+    }
+    else if (abs(b) > eps)
+    {
+        if (abs(*L1-a) - abs(b) > 0.0f)
+        {
+        *V1_1 = b/abs(*L1-a);
+        *V1_2 = (*L1-a)/abs(*L1-a);
+        }
+        else
+        {
+        *V1_1 = b/abs(b);
+        *V1_2 = (*L1-a)/abs(b);
+
+        }
+
+        if (abs(*L2-a) - abs(b) > 0.0f)
+        {
+        *V2_1 = b/abs(*L2-a);
+        *V2_2 = (*L2-a)/abs(*L2-a);
+        }
+        else
+        {
+        *V2_1 = b/abs(b);
+        *V2_2 = (*L2-a)/abs(b);
+        }
+
+    }
+    else //if ((abs(c) <= eps) && (abs(b) <= eps))
+    {
+        *V1_1 = 1.0f;
+        *V1_2 = 0.0f;
+        *V2_1 = 0.0f;
+        *V2_2 = 1.0f;
+    } 
+    
+}
+
 //float4 used as 2x2 matrix
 // x  y
 // z  w
@@ -245,25 +315,34 @@ __host__ __device__ __forceinline__ void unitScale(float2 *v) { //notice e1,2 ar
 // e1y  e2y
 //http://en.wikipedia.org/wiki/Eigenvalue_algorithm#2.C3.972_matrices
 //a=m.x, b=m.y, c=m.z, d=m.w
+//
+//makes channel 2 of diffusion tensor (m22) 0!!!
 __host__ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
   float trace = m.x + m.w;
   float sqrt_term = sqrtf(trace*trace - 4*(m.x*m.w - m.y*m.z));
 
 
-  (*lambda1) = (trace + sqrt_term) / 2.0f; //lambda1  //larger eigenvalue
-  (*lambda2) = (trace - sqrt_term) / 2.0f; //lambda2  //smaller eigenvalue QUESTION: since sqrt_term >= 0 always, it must follow that lambda1 > lambda2;
+  float T = m.x + m.w; 
+  float D = m.x*m.w - m.y*m.z;
+    
+  *lambda1 = (T/2.0f) + sqrtf(T*T/4.0f - D);
+  *lambda2 = (T/2.0f) - sqrtf(T*T/4.0f - D);
+
+
+  //(*lambda1) = (trace + sqrt_term) / 2.0f; //lambda1  //larger eigenvalue
+  //(*lambda2) = (trace - sqrt_term) / 2.0f; //lambda2  //smaller eigenvalue QUESTION: since sqrt_term >= 0 always, it must follow that lambda1 > lambda2;
 
   //www.math.harvard.edu/archive/21b_fall_04/exhibits/2dmatrices/index.html
   if(abs(m.z)>eps){ //c!=0
-    e2->x = (((*lambda2)-m.w)/m.z); //-d
-    e1->x = (((*lambda1)-m.w)/m.z); //-d
-    e2->y=1;
-    e1->y=1;
+    e2->x = ((*lambda2)-m.w); //-d
+    e1->x = ((*lambda1)-m.w); //-d
+    e2->y=m.z;
+    e1->y=m.z;
   }else if(abs(m.y)>eps){ //b!=0
-    e2->y = (((*lambda2)-m.x)/m.y); //-d
-    e1->y = (((*lambda1)-m.x)/m.y); //-d
-    e2->x=1;
-    e1->x=1;
+    e2->y = ((*lambda2)-m.x); //-d
+    e1->y = ((*lambda1)-m.x); //-d
+    e2->x=m.y;
+    e1->x=m.y;
   }else{
     e2->x = 0;
     e1->x = 1;
@@ -317,8 +396,15 @@ __host__ __device__ float2 operator*(const float4 & m, const float2 & v) {
 
 }
 
+//so float4 as matrix represenation can be used with cout
 __host__ __device__ ostream& operator<<(ostream& os, const float4& m) {
   os << m.x << " \t" << m.y << std::endl << m.z << " \t" << m.w << std::endl;
+  return os;
+}
+
+//so float2 as column vector represenation can be used with cout
+__host__ __device__ ostream& operator<<(ostream& os, const float2& v) {
+  os << v.x << std::endl << v.y << std::endl;
   return os;
 }
 
@@ -367,4 +453,24 @@ __host__ __device__ __forceinline__ float4 calcG2(float lambda1, float lambda2, 
     G.w = mu1*e1.y*e1.y + mu2*e2.y*e2.y;
 
     return G;
+}
+
+//from other group
+__host__ __device__ __forceinline__ float4 calcG3(float L1, float L2, float2 e1, float2 e2, float C, float alpha){
+
+    float mu1, mu2;
+    mu1 = alpha;
+    if (abs(L1-L2)<eps)
+    {
+        mu2 = alpha;
+    }
+    else
+    {
+        mu2 = alpha + (1.0f-alpha)*expf(-C/((L1-L2)*(L1-L2)));
+    }
+
+    float4 G;
+    G.x = mu1*e1.x*e1.x + mu2*e2.x*e2.x;
+    G.y=G.z = mu1*e1.x*e1.y + mu2*e2.x*e2.y; 
+    G.w = mu1*e1.y*e1.y + mu2*e2.y*e2.y;
 }

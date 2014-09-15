@@ -29,115 +29,8 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
-
-__device__ void cuda_eig(float a, float b, float c, float d, float *L1, float *L2, float *V1_1, float *V1_2, float *V2_1, float *V2_2)
-{
-    float T = a + d; 
-    float D = a*d - b*c;
-    float eps = 0.00001;
-    
-    *L1 = (T/2.0f) + sqrtf(T*T/4.0f - D);
-    *L2 = (T/2.0f) - sqrtf(T*T/4.0f - D);
-
-    if (abs(c) > eps)
-    {
-        if (abs(*L1-d) - abs(c) > 0.0f)
-        {
-            *V1_1 = (*L1-d)/abs(*L1-d);
-            *V1_2 = c/abs(*L1-d);
-        }
-        else
-        {
-            *V1_1 = (*L1-d)/abs(c);
-            *V1_2 = c/abs(c);
-        }
-        if (abs(*L2-d) - abs(c) > 0.0f)
-        {
-            *V2_1 = (*L2-d)/abs(*L2-d);
-            *V2_2 = c/abs(*L2-d);
-        }
-        else
-        {
-            *V2_1 = (*L2-d)/abs(c);
-            *V2_2 = c/abs(c);
-        }
-
-    }
-    else if (abs(b) > eps)
-    {
-        if (abs(*L1-a) - abs(b) > 0.0f)
-        {
-        *V1_1 = b/abs(*L1-a);
-        *V1_2 = (*L1-a)/abs(*L1-a);
-        }
-        else
-        {
-        *V1_1 = b/abs(b);
-        *V1_2 = (*L1-a)/abs(b);
-
-        }
-
-        if (abs(*L2-a) - abs(b) > 0.0f)
-        {
-        *V2_1 = b/abs(*L2-a);
-        *V2_2 = (*L2-a)/abs(*L2-a);
-        }
-        else
-        {
-        *V2_1 = b/abs(b);
-        *V2_2 = (*L2-a)/abs(b);
-        }
-
-    }
-    else //if ((abs(c) <= eps) && (abs(b) <= eps))
-    {
-        *V1_1 = 1.0f;
-        *V1_2 = 0.0f;
-        *V2_1 = 0.0f;
-        *V2_2 = 1.0f;
-    } 
-    
-}
-
-
-__global__ void diffusion_tensor(float* d_structSmooth, float* d_diffusionTensor, float* d_le1, float* d_le2, int w, int h, float C, float alpha)
-{
-    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
-    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-    if(x>=w || y>=h) return;
-
-    float L1, L2, V1_1, V1_2, V2_1, V2_2;
-    float mu1, mu2;
-    float eps = 0.00001;
-
-    float4 m;
-    m.x=d_structSmooth[x + w*y]; //m11
-    m.y=d_structSmooth[x + w*y + w*h]; //m12
-    m.z=m.y;                            //m21 == m12
-    m.w=d_structSmooth[x + w*y + w*h*2]; //m22
-    
-
-    cuda_eig(m.x, m.y, m.z, m.w, &L1, &L2, &V1_1, &V1_2, &V2_1, &V2_2);
-
-    mu1 = alpha;
-
-    if (abs(L1-L2)<eps)
-    {
-        mu2 = alpha;
-    }
-    else
-    {
-        mu2 = alpha + (1.0f-alpha)*expf(-C/((L1-L2)*(L1-L2)));
-    }
-
-    d_diffusionTensor[x + y*w] = mu1*V1_1*V1_1 + mu2*V2_1*V2_1;
-    d_diffusionTensor[x + y*w + w*h] = mu1*V1_1*V1_2 + mu2*V2_1*V2_2; 
-    d_diffusionTensor[x + y*w + w*h*2] = mu1*V1_2*V1_2 + mu2*V2_2*V2_2;
-
-}
-
 //13.1
-__global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float* d_diffusionTensor,float* d_le1, float* d_le2, int w, int h, float C, float alpha){
+__global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float* d_diffusionTensor,float* d_le1, float* d_le2, int w, int h, float C, float alpha, int eig){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
     if(x>=w || y>=h) return;
@@ -148,14 +41,16 @@ __global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float*
     m.y=d_structSmooth[x + w*y + w*h]; //m12
     m.z=m.y;                            //m21 == m12
     m.w=d_structSmooth[x + w*y + w*h*2]; //m22
-
-    //if(threadIdx.x==50 && threadIdx.y==50){
-        //std::cout<<"matrix:"<<m.x<<" "<<m.y<<" "<<m.z<<" "<<m.w<<std::endl;
-    //}
     
     float lambda1,lambda2;
     float2 e1,e2;
-    compute_eig(m, &lambda1, &lambda2, &e1, &e2);
+
+    if(eig==1){
+        compute_eig(m, &lambda1, &lambda2, &e1, &e2); //error happens here!!!
+    }else{
+        cuda_eig(m.x, m.y, m.z, m.w, &lambda1, &lambda2, &e1.x, &e1.y, &e2.x, &e2.y);
+    }
+
 
     d_le1[x + y*w] = lambda1;
     d_le1[x + y*w + w*h] = e1.x; //==G.z ??
@@ -166,7 +61,7 @@ __global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float*
     d_le2[x + y*w + w*h*2] = e2.y;
 
     //c)
-    float4 G = calcG(lambda1,lambda2,e1,e2,C,alpha);
+    float4 G = calcG2(lambda1,lambda2,e1,e2,C,alpha);
 
     d_diffusionTensor[x + y*w] = G.x;
     d_diffusionTensor[x + y*w + w*h] = G.y; //==G.z ??
@@ -248,7 +143,7 @@ int main(int argc, char **argv)
     getParam("N", N, argc, argv);
     cout << "N: " << N <<"  [CPU iterations] "<<endl;
 
-    float tau = 0.15;
+    float tau = 0.1;
     getParam("tau", tau, argc, argv);
     cout << "tau: " << tau << endl;
 
@@ -263,6 +158,10 @@ int main(int argc, char **argv)
     int delay = 0;
     getParam("delay", delay, argc, argv);
     cout << "delay: " << delay << " ms"<<"    [use -delay 0 to step with keys]"<<endl;
+
+    int eig = 2;
+    getParam("eig", eig, argc, argv);
+    cout << "eig: " << eig <<endl;
 
     float C = 5e-6f;
     getParam("C", C, argc, argv);
@@ -409,7 +308,7 @@ int main(int argc, char **argv)
 
     bool isRunning=true;
 
-            //presmooth input image with sigma
+        //presmooth input image with sigma
         convolutionGPU<<<grid, block>>>(d_imgIn, d_imgKernel_sigma, d_imgS, w, h, nc, G_sigma.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
 
@@ -424,7 +323,7 @@ int main(int argc, char **argv)
         //cv::waitKey(0);
         
         //a)
-        createStructureTensorLayered<<<grid, block>>>(d_v1,d_v2,d_struct, w, h, nc); //createStructureTensorLayered
+        createStructureTensorLayered<<<grid, block>>>(d_v1,d_v2,d_struct, w, h, nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
         //d_imagesc("d_struct",d_struct, w, h, nc, true);
@@ -435,15 +334,15 @@ int main(int argc, char **argv)
         convolutionGPU<<<grid, block>>>(d_struct,d_imgKernel_rho, d_structSmooth, w, h, nc, G_rho.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        d_imagesc("d_structSmooth",d_structSmooth, w, h, nc, true);
-        cv::waitKey(0);
+        //d_imagesc("d_structSmooth",d_structSmooth, w, h, nc, true);
+        //cv::waitKey(0);
 
         //b and c)
-        diffusion_tensor /*diffusionTensorFromStructureTensor*/ <<<grid, block>>>(d_structSmooth, d_diffusionTensor, d_le1, d_le2, w, h, C, alpha); 
+        diffusionTensorFromStructureTensor <<<grid, block>>>(d_structSmooth, d_diffusionTensor, d_le1, d_le2, w, h, C, alpha, eig); 
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        //d_imagesc("d_le1",d_le1, w, h, nc, true);
-        //d_imagesc("d_le2",d_le2, w, h, nc, true);
+        d_imagesc("d_le1",d_le1, w, h, nc, true);
+        d_imagesc("d_le2",d_le2, w, h, nc, true);
 
         d_imagesc("d_diffusionTensor",d_diffusionTensor, w, h, nc, true);
         cv::waitKey(0);
