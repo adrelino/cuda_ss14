@@ -330,7 +330,6 @@ __host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e
   m->w = v.y * v.y;
 }
 
-
 __host__ __device__ __forceinline__ float4 calcG(float lambda1, float lambda2, float2 e1, float2 e2, float C, float alpha){
     float4 e1_2; outer(e1,&e1_2);
     float4 e2_2; outer(e2,&e2_2);
@@ -349,6 +348,7 @@ __host__ __device__ __forceinline__ float4 calcG(float lambda1, float lambda2, f
 
     return G;
 }
+
 __host__ __device__ __forceinline__ float4 calcG2(float lambda1, float lambda2, float2 e1, float2 e2, float C, float alpha){
 
     float mu1=alpha;
