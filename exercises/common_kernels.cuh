@@ -182,9 +182,15 @@ __global__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, 
     return;
 
   for(int c = 0; c < nc; ++c) {
+    if (c == 0) {
+      d_m11[x + y * w] = d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m12[x + y * w] = d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m22[x + y * w] = d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];      
+    } else {
       d_m11[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m12[x + y * w] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
       d_m22[x + y * w] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+    }
   }
 }
 
@@ -196,9 +202,15 @@ __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float 
     return;
 
   for(int c = 0; c < nc; ++c) {
+    if (c == 0) {
+      d_m11_12_22[x + y * w] = d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h] = d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h*2] = d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+    } else {
       d_m11_12_22[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m11_12_22[x + y * w + w*h] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
-      d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+      d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];      
+    }
   }
 }
 
@@ -214,7 +226,7 @@ __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float 
 // e1x  e2x
 // e1y  e2y
 //http://en.wikipedia.org/wiki/Eigenvalue_algorithm#2.C3.972_matrices
-__device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
+__host__ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
   float trace = m.x + m.w;
   float sqrt_term = sqrtf(trace*trace - 4*(m.x*m.w - m.y*m.z));
 
