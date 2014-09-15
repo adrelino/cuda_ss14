@@ -22,6 +22,7 @@
 #include <math.h>
 #include "common_kernels.cuh"
 #include "opencv_helpers.h"
+#include <stdio.h>
 //#include <stdio.h>
 using namespace std;
 
@@ -73,7 +74,7 @@ __host__ __device__ float4 calcG(float lambda1, float lambda2, float2 e1, float2
 
     float mu2=alpha;
     float lambdaDiff=lambda1-lambda2; //always positive since l1>l2;
-    if(lambdaDiff>0.000001){ //alpha since we use floating point arithmetic
+    if(abs(lambdaDiff) > eps){ //alpha since we use floating point arithmetic
         mu2 = alpha + (1-alpha) * expf( -C / (lambdaDiff*lambdaDiff) );
     }
     mul(mu2,&e2_2);
@@ -96,6 +97,10 @@ __global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float*
     m.y=d_structSmooth[x + w*y + w*h]; //m12
     m.z=m.y;                            //m21 == m12
     m.w=d_structSmooth[x + w*y + w*h*2]; //m22
+
+    //if(threadIdx.x==50 && threadIdx.y==50){
+        //std::cout<<"matrix:"<<m.x<<" "<<m.y<<" "<<m.z<<" "<<m.w<<std::endl;
+    //}
     
     float lambda1,lambda2;
     float2 e1,e2;
@@ -106,7 +111,7 @@ __global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float*
 
     d_diffusionTensor[x + y*w] = G.x;
     d_diffusionTensor[x + y*w + w*h] = G.y; //==G.z ??
-    d_diffusionTensor[x + y*w + 2*w*h] = G.w;
+    d_diffusionTensor[x + y*w + w*h*2] = G.w;
 }
 
 int main(int argc, char **argv)
@@ -142,11 +147,11 @@ int main(int argc, char **argv)
     // ### Define your own parameters here as needed
 
     //iteration steps on CPU 
-    int N = 2000;
+    int N = 100;
     getParam("N", N, argc, argv);
     cout << "N: " << N <<"  [CPU iterations] "<<endl;
 
-    float tau = 0.25;
+    float tau = 0.15;
     getParam("tau", tau, argc, argv);
     cout << "tau: " << tau << endl;
 
@@ -158,15 +163,15 @@ int main(int argc, char **argv)
     getParam("rho", rho, argc, argv);
     cout << "rho: " << rho << endl;
 
-    int delay = 1;
+    int delay = 0;
     getParam("delay", delay, argc, argv);
     cout << "delay: " << delay << " ms"<<"    [use -delay 0 to step with keys]"<<endl;
 
     float C = 5e-6f;
     getParam("C", C, argc, argv);
-    cout << "C: " << C << "    [ G_CONSTANT_1 = 1   ,   G_INVERSE = 2    ,     G_EXP = 3 ]"<<endl;
+    cout << "C: " << C <<endl;
 
-    float alpha=0.01; //define alpha
+    float alpha=0.01f; //define alpha
     getParam("alpha", alpha, argc, argv);
     cout << "alpha: " << alpha << endl;
 
@@ -264,19 +269,28 @@ int main(int argc, char **argv)
     int i=0;
     Timer timergpu; 
 
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_imgKernel_sigma, *d_imgS, *d_imgKernel_rho;
+	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_imgKernel_sigma, *d_imgS, *d_imgKernel_rho, *d_diffusionTensor;
 
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
 
     cudaMalloc(&d_imgS, n * sizeof(float) );CUDA_CHECK;
+    cudaMemset(d_imgS, 0, n * sizeof(float) );CUDA_CHECK;
     cudaMalloc(&d_v1, n * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_v1, 0, n * sizeof(float) );CUDA_CHECK;
 	cudaMalloc(&d_v2, n * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_v2, 0, n * sizeof(float) );CUDA_CHECK;    
     cudaMalloc(&d_divergence, n * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_divergence, 0,  n * sizeof(float) ); CUDA_CHECK;
+
+
 
     cudaMalloc(&d_struct, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_struct, 0, n3 * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_structSmooth, n3 * sizeof(float) ); CUDA_CHECK;
-
+    cudaMemset(d_structSmooth, 0, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_diffusionTensor, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_diffusionTensor, 0,  n3 * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_imgKernel_sigma, (size_t) G_sigma.cols * G_sigma.rows * sizeof(float) ); CUDA_CHECK;
     cudaMemcpy(d_imgKernel_sigma, imgKernel_sigma, G_sigma.cols * G_sigma.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     //d_imagesc("d_imgKernel_sigma",d_imgKernel_sigma,G_sigma.cols,G_sigma.rows,1,false,true);
@@ -290,11 +304,7 @@ int main(int argc, char **argv)
 
     bool isRunning=true;
 
-	for (; i < N && isRunning; ++i)
-    {
-        timergpu.start();
-
-        //presmooth input image with sigma
+            //presmooth input image with sigma
         convolutionGPU<<<grid, block>>>(d_imgIn, d_imgKernel_sigma, d_imgS, w, h, nc, G_sigma.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
 
@@ -320,27 +330,31 @@ int main(int argc, char **argv)
         convolutionGPU<<<grid, block>>>(d_struct,d_imgKernel_rho, d_structSmooth, w, h, nc, G_rho.cols); CUDA_CHECK;
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        //d_imagesc("d_structSmooth",d_structSmooth, w, h, nc, true);
-        //cv::waitKey(0);
+        d_imagesc("d_structSmooth",d_structSmooth, w, h, nc, true);
+        cv::waitKey(0);
 
         //b and c)
-        float *d_diffusionTensor;
-        d_diffusionTensor = d_struct; //missusing unsmoothed structure tensor to hold diffusionTensor since not needed anymore
         diffusionTensorFromStructureTensor<<<grid, block>>>(d_structSmooth, d_diffusionTensor, w, h, C, alpha); 
         cudaDeviceSynchronize();CUDA_CHECK;
 
         d_imagesc("d_diffusionTensor",d_diffusionTensor, w, h, nc, true);
         cv::waitKey(0);
 
+
+	/*for (; i < N && isRunning; ++i)
+    {
+        timergpu.start();
+
+
         //now use normal gradient, not rotational invariant one;
-        //gradient<<<grid, block>>>(d_imgIn,d_v1,d_v2, w, h, nc);
-        //cudaDeviceSynchronize();CUDA_CHECK;
+        gradient<<<grid, block>>>(d_imgIn,d_v1,d_v2, w, h, nc);
+        cudaDeviceSynchronize();CUDA_CHECK;
 
         diffusivity<<<grid,block>>>(d_v1,d_v2,d_diffusionTensor,w,h,nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        d_imagesc("d_v1",d_v1, w, h, nc);
-        d_imagesc("d_v2",d_v1, w, h, nc);
+        d_imagesc("d_v1-diffusivity",d_v1, w, h, nc);
+        d_imagesc("d_v2-diffusivity",d_v1, w, h, nc);
         cv::waitKey(0);
 
         divergence<<<grid,block>>>(d_v1,d_v2,d_divergence, w, h, nc);
@@ -367,7 +381,7 @@ int main(int argc, char **argv)
             cout<<"leaving iteration loop at i: "<<i<<"   total iterations: "<<i<<endl;
             isRunning=false;
         }
-    }
+    }*/
 
     cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgS);CUDA_CHECK;
@@ -378,6 +392,8 @@ int main(int argc, char **argv)
     cudaFree(d_divergence);CUDA_CHECK;
     cudaFree(d_imgKernel_sigma);CUDA_CHECK;
     cudaFree(d_imgKernel_rho);CUDA_CHECK;
+    cudaFree(d_diffusionTensor);CUDA_CHECK;
+
 
 
     float ms=GetAverage(tg, i)*1000;

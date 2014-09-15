@@ -18,9 +18,10 @@
 
 //#include "common_kernels.h"
 #include <cuda_runtime.h>
+#include <math.h>
 
 //https://devtalk.nvidia.com/default/topic/487686/how-to-split-cuda-code/  solution !!!
-
+const float eps=0.000001;
 
 //                       in             out      out
 __device__ __forceinline__ void d_gradient(float *imgIn, float *v1, float *v2, int w, int h, int nc){
@@ -174,6 +175,7 @@ __global__ __forceinline__ void computeSpatialDerivatives(float *d_img, float *d
   }
 }
 
+//neeeds memset 0 beforehand!!!
 __global__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, float *d_m11, float *d_m12, float *d_m22, int w, int h, int nc) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -188,6 +190,7 @@ __global__ __forceinline__ void createStructureTensor(float *d_dx, float *d_dy, 
   }
 }
 
+//neeeds memset 0 beforehand!!!
 __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float *d_dy, float *d_m11_12_22, int w, int h, int nc) {
   size_t x = threadIdx.x + blockDim.x * blockIdx.x;
   size_t y = threadIdx.y + blockDim.y * blockIdx.y;
@@ -199,6 +202,18 @@ __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float 
       d_m11_12_22[x + y * w] += d_dx[x + y * w + c*w*h] * d_dx[x + y * w + c*w*h];
       d_m11_12_22[x + y * w + w*h] += d_dx[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
       d_m11_12_22[x + y * w + w*h*2] += d_dy[x + y * w + c*w*h] * d_dy[x + y * w + c*w*h];
+  }
+}
+
+
+//scales a vector so that its largest component is 1;
+__host__ __device__ __forceinline__ void unitScale(float2 *v) { //notice e1,2 are arrays
+  if(v->x > v->y){
+    v->y /= v->x;
+    v->x = 1;
+  }else{
+    v->x /= v->y;
+    v->y = 1;
   }
 }
 
@@ -214,7 +229,8 @@ __global__ __forceinline__ void createStructureTensorLayered(float *d_dx, float 
 // e1x  e2x
 // e1y  e2y
 //http://en.wikipedia.org/wiki/Eigenvalue_algorithm#2.C3.972_matrices
-__device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
+//a=m.x, b=m.y, c=m.z, d=m.w
+__host__ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lambda2, float2 *e1, float2 *e2) { //notice e1,2 are arrays
   float trace = m.x + m.w;
   float sqrt_term = sqrtf(trace*trace - 4*(m.x*m.w - m.y*m.z));
 
@@ -222,14 +238,35 @@ __device__ __forceinline__ void compute_eig(float4 m, float *lambda1, float *lam
   (*lambda1) = (trace + sqrt_term) / 2.0f; //lambda1  //larger eigenvalue
   (*lambda2) = (trace - sqrt_term) / 2.0f; //lambda2  //smaller eigenvalue QUESTION: since sqrt_term >= 0 always, it must follow that lambda1 > lambda2;
 
+  //www.math.harvard.edu/archive/21b_fall_04/exhibits/2dmatrices/index.html
+  if(abs(m.z)>eps){ //c!=0
+    e2->x = (((*lambda2)-m.w)/m.z); //-d
+    e1->x = (((*lambda1)-m.w)/m.z); //-d
+    e2->y=1;
+    e1->y=1;
+  }else if(abs(m.y)>eps){ //b!=0
+    e2->y = (((*lambda2)-m.x)/m.y); //-d
+    e1->y = (((*lambda1)-m.x)/m.y); //-d
+    e2->x=1;
+    e1->x=1;
+  }else{
+    e2->x = 0;
+    e1->x = 1;
+    e2->y = 1;
+    e1->y = 0;
+  }
+
+  unitScale(e1);
+  unitScale(e2);
+
   //only calculating the first column of 
   //[eig1 | x*eig1]=A-lambda2*I;
-  e1->x = m.x - (*lambda2);
+  //e1->x = m.x - (*lambda2);
   //[eig2 | x*eig2]=A-lambda1*I;
-  e2->x = m.x - (*lambda1);
+  //e2->x = m.x - (*lambda1);
 
-  e1->y=m.z; //same for both, since -I*lambda is 0 at the off diagonals   //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
-  e2->y=m.z;   //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
+  //e1->y=m.z; //same for both, since -I*lambda is 0 at the off diagonals   //eigenvector corresponding to larger eigenvalue is first column (NOT ROW!!) of float4
+  //e2->y=m.z;   //eigenvector corresponding to smaller eigenvalue is second column (NOT ROW!!) of float4
 }
 
 // 2x2 matrix times scalar multiplication, result stored in m
@@ -272,3 +309,4 @@ __host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e
   m->z = v.y * v.x;
   m->w = v.y * v.y;
 }
+
