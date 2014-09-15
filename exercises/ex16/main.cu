@@ -21,9 +21,6 @@
 #include "aux.h"
 #include <iostream>
 #include <math.h>
-//#include <stdlib.h>
-//#include <stdio.h>
-
 #include "common_kernels.cuh"
 // #include "opencv_helpers.h"
 
@@ -233,6 +230,8 @@ int main(int argc, char **argv)
         cudaFree(d_hist); CUDA_CHECK;
     }
 
+    char windowTitle[256];
+    
     for(int c=0; c<nc; c++){
         cout << "channel nr. " << c << ":" << endl;
         for(int i=256*c; i<256*(c+1); i++){
@@ -241,7 +240,8 @@ int main(int argc, char **argv)
         cout << endl;
         int *histc=new int[256];
         std::copy (hist+256*c, hist+256*(c+1), histc);
-        showHistogram256("         histogram"+c, histc, 100+w, c*200);
+        sprintf(windowTitle, "Histogram channel %d", c);
+        showHistogram256(windowTitle, histc, 100+w, c*200);
     }
     cout << "avg time global memory: " << GetAverage(tg, repeats)*1000 << " ms" << endl;
     cout << "avg time shared memory: " << GetAverage(ts, repeats)*1000 << " ms" << endl;
