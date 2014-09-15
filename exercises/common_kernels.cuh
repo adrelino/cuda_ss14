@@ -19,6 +19,9 @@
 //#include "common_kernels.h"
 #include <cuda_runtime.h>
 #include <math.h>
+#include <iostream>
+
+using namespace std;
 
 //https://devtalk.nvidia.com/default/topic/487686/how-to-split-cuda-code/  solution !!!
 const float eps=0.000001;
@@ -314,10 +317,54 @@ __host__ __device__ float2 operator*(const float4 & m, const float2 & v) {
 
 }
 
+__host__ __device__ ostream& operator<<(ostream& os, const float4& m) {
+  os << m.x << " \t" << m.y << std::endl << m.z << " \t" << m.w << std::endl;
+  return os;
+}
+
 // outer product of 2x1 vector with itself -> 2x2 matrix
 __host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e1,2 are arrays
   m->x = v.x * v.x;
   m->y = v.x * v.y;
   m->z = v.y * v.x;
   m->w = v.y * v.y;
+}
+
+
+__host__ __device__ __forceinline__ float4 calcG(float lambda1, float lambda2, float2 e1, float2 e2, float C, float alpha){
+    float4 e1_2; outer(e1,&e1_2);
+    float4 e2_2; outer(e2,&e2_2);
+
+    mul(alpha,&e1_2); //mu1 = alpha
+
+    float mu2=alpha;
+    float lambdaDiff=lambda1-lambda2; //always positive since l1>l2;
+    if(abs(lambdaDiff) > eps){ //alpha since we use floating point arithmetic
+        mu2 = alpha + (1-alpha) * expf( -C / (lambdaDiff*lambdaDiff) );
+    }
+    mul(mu2,&e2_2);
+
+    float4 G = e1_2 + e2_2;  //own operator in common_kernels.cuh
+    //add(e1_2,&e2_2);G=e2_2;
+
+    return G;
+}
+__host__ __device__ __forceinline__ float4 calcG2(float lambda1, float lambda2, float2 e1, float2 e2, float C, float alpha){
+
+    float mu1=alpha;
+    float mu2=alpha;
+
+    float lambdaDiff=lambda1-lambda2; //always positive since l1>l2;
+    if(abs(lambdaDiff) > eps){ //alpha since we use floating point arithmetic
+        mu2 = alpha + ((1.0f-alpha) * expf( -C / (lambdaDiff*lambdaDiff) )) ;
+    }
+
+    float4 G;
+
+    G.x = mu1*e1.x*e1.x + mu2*e2.x*e2.x;
+    G.y = mu1*e1.x*e1.y + mu2*e2.x*e2.y;
+    G.z = mu1*e1.y*e1.x + mu2*e2.y*e2.x;
+    G.w = mu1*e1.y*e1.y + mu2*e2.y*e2.y;
+
+    return G;
 }

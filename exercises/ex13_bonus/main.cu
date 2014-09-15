@@ -29,16 +29,148 @@ using namespace std;
 // uncomment to use the camera
 //#define CAMERA
 
-//the update step for the image u_n -> u_n+1
-__global__ void update(float tau, float *u_n, float *div, int w, int h, int nc){
+
+__device__ void cuda_eig(float a, float b, float c, float d, float *L1, float *L2, float *V1_1, float *V1_2, float *V2_1, float *V2_2)
+{
+    float T = a + d; 
+    float D = a*d - b*c;
+    float eps = 0.00001;
+    
+    *L1 = (T/2.0f) + sqrtf(T*T/4.0f - D);
+    *L2 = (T/2.0f) - sqrtf(T*T/4.0f - D);
+
+    if (abs(c) > eps)
+    {
+        if (abs(*L1-d) - abs(c) > 0.0f)
+        {
+            *V1_1 = (*L1-d)/abs(*L1-d);
+            *V1_2 = c/abs(*L1-d);
+        }
+        else
+        {
+            *V1_1 = (*L1-d)/abs(c);
+            *V1_2 = c/abs(c);
+        }
+        if (abs(*L2-d) - abs(c) > 0.0f)
+        {
+            *V2_1 = (*L2-d)/abs(*L2-d);
+            *V2_2 = c/abs(*L2-d);
+        }
+        else
+        {
+            *V2_1 = (*L2-d)/abs(c);
+            *V2_2 = c/abs(c);
+        }
+
+    }
+    else if (abs(b) > eps)
+    {
+        if (abs(*L1-a) - abs(b) > 0.0f)
+        {
+        *V1_1 = b/abs(*L1-a);
+        *V1_2 = (*L1-a)/abs(*L1-a);
+        }
+        else
+        {
+        *V1_1 = b/abs(b);
+        *V1_2 = (*L1-a)/abs(b);
+
+        }
+
+        if (abs(*L2-a) - abs(b) > 0.0f)
+        {
+        *V2_1 = b/abs(*L2-a);
+        *V2_2 = (*L2-a)/abs(*L2-a);
+        }
+        else
+        {
+        *V2_1 = b/abs(b);
+        *V2_2 = (*L2-a)/abs(b);
+        }
+
+    }
+    else //if ((abs(c) <= eps) && (abs(b) <= eps))
+    {
+        *V1_1 = 1.0f;
+        *V1_2 = 0.0f;
+        *V2_1 = 0.0f;
+        *V2_2 = 1.0f;
+    } 
+    
+}
+
+
+__global__ void diffusion_tensor(float* d_structSmooth, float* d_diffusionTensor, float* d_le1, float* d_le2, int w, int h, float C, float alpha)
+{
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
-
     if(x>=w || y>=h) return;
 
-    for (int i = 0; i < nc; ++i){
-        u_n[x+ y*w +i*w*h]=u_n[x+ y*w +i*w*h]+tau*div[x+ y*w +i*w*h];
+    float L1, L2, V1_1, V1_2, V2_1, V2_2;
+    float mu1, mu2;
+    float eps = 0.00001;
+
+    float4 m;
+    m.x=d_structSmooth[x + w*y]; //m11
+    m.y=d_structSmooth[x + w*y + w*h]; //m12
+    m.z=m.y;                            //m21 == m12
+    m.w=d_structSmooth[x + w*y + w*h*2]; //m22
+    
+
+    cuda_eig(m.x, m.y, m.z, m.w, &L1, &L2, &V1_1, &V1_2, &V2_1, &V2_2);
+
+    mu1 = alpha;
+
+    if (abs(L1-L2)<eps)
+    {
+        mu2 = alpha;
     }
+    else
+    {
+        mu2 = alpha + (1.0f-alpha)*expf(-C/((L1-L2)*(L1-L2)));
+    }
+
+    d_diffusionTensor[x + y*w] = mu1*V1_1*V1_1 + mu2*V2_1*V2_1;
+    d_diffusionTensor[x + y*w + w*h] = mu1*V1_1*V1_2 + mu2*V2_1*V2_2; 
+    d_diffusionTensor[x + y*w + w*h*2] = mu1*V1_2*V1_2 + mu2*V2_2*V2_2;
+
+}
+
+//13.1
+__global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float* d_diffusionTensor,float* d_le1, float* d_le2, int w, int h, float C, float alpha){
+    size_t x = threadIdx.x + blockDim.x * blockIdx.x;
+    size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+    if(x>=w || y>=h) return;
+
+    //b)
+    float4 m;
+    m.x=d_structSmooth[x + w*y]; //m11
+    m.y=d_structSmooth[x + w*y + w*h]; //m12
+    m.z=m.y;                            //m21 == m12
+    m.w=d_structSmooth[x + w*y + w*h*2]; //m22
+
+    //if(threadIdx.x==50 && threadIdx.y==50){
+        //std::cout<<"matrix:"<<m.x<<" "<<m.y<<" "<<m.z<<" "<<m.w<<std::endl;
+    //}
+    
+    float lambda1,lambda2;
+    float2 e1,e2;
+    compute_eig(m, &lambda1, &lambda2, &e1, &e2);
+
+    d_le1[x + y*w] = lambda1;
+    d_le1[x + y*w + w*h] = e1.x; //==G.z ??
+    d_le1[x + y*w + w*h*2] = e1.y;
+
+    d_le2[x + y*w] = lambda2;
+    d_le2[x + y*w + w*h] = e2.x; //==G.z ??
+    d_le2[x + y*w + w*h*2] = e2.y;
+
+    //c)
+    float4 G = calcG(lambda1,lambda2,e1,e2,C,alpha);
+
+    d_diffusionTensor[x + y*w] = G.x;
+    d_diffusionTensor[x + y*w + w*h] = G.y; //==G.z ??
+    d_diffusionTensor[x + y*w + w*h*2] = G.w;
 }
 
 //result stored again in v1,v2
@@ -66,52 +198,17 @@ __global__ void diffusivity(float* v1, float* v2, float* d_diffusionTensor, int 
     }
 }
 
-__host__ __device__ float4 calcG(float lambda1, float lambda2, float2 e1, float2 e2, float C, float alpha){
-    float4 e1_2; outer(e1,&e1_2);
-    float4 e2_2; outer(e2,&e2_2);
 
-    mul(alpha,&e1_2); //mu1 = alpha
-
-    float mu2=alpha;
-    float lambdaDiff=lambda1-lambda2; //always positive since l1>l2;
-    if(abs(lambdaDiff) > eps){ //alpha since we use floating point arithmetic
-        mu2 = alpha + (1-alpha) * expf( -C / (lambdaDiff*lambdaDiff) );
-    }
-    mul(mu2,&e2_2);
-
-    float4 G = e1_2 + e2_2;  //own operator in common_kernels.cuh
-    //add(e1_2,&e2_2);G=e2_2;
-
-    return G;
-}
-
-//13.1
-__global__ void diffusionTensorFromStructureTensor(float* d_structSmooth, float* d_diffusionTensor, int w, int h, float C, float alpha){
+//the update step for the image u_n -> u_n+1
+__global__ void update(float tau, float *u_n, float *div, int w, int h, int nc){
     size_t x = threadIdx.x + blockDim.x * blockIdx.x;
     size_t y = threadIdx.y + blockDim.y * blockIdx.y;
+
     if(x>=w || y>=h) return;
 
-    //b)
-    float4 m;
-    m.x=d_structSmooth[x + w*y]; //m11
-    m.y=d_structSmooth[x + w*y + w*h]; //m12
-    m.z=m.y;                            //m21 == m12
-    m.w=d_structSmooth[x + w*y + w*h*2]; //m22
-
-    //if(threadIdx.x==50 && threadIdx.y==50){
-        //std::cout<<"matrix:"<<m.x<<" "<<m.y<<" "<<m.z<<" "<<m.w<<std::endl;
-    //}
-    
-    float lambda1,lambda2;
-    float2 e1,e2;
-    compute_eig(m, &lambda1, &lambda2, &e1, &e2);
-
-    //c)
-    float4 G = calcG(lambda1,lambda2,e1,e2,C,alpha);
-
-    d_diffusionTensor[x + y*w] = G.x;
-    d_diffusionTensor[x + y*w + w*h] = G.y; //==G.z ??
-    d_diffusionTensor[x + y*w + w*h*2] = G.w;
+    for (int i = 0; i < nc; ++i){
+        u_n[x+ y*w +i*w*h]=u_n[x+ y*w +i*w*h]+tau*div[x+ y*w +i*w*h];
+    }
 }
 
 int main(int argc, char **argv)
@@ -269,7 +366,7 @@ int main(int argc, char **argv)
     int i=0;
     Timer timergpu; 
 
-	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_imgKernel_sigma, *d_imgS, *d_imgKernel_rho, *d_diffusionTensor;
+	float *d_imgIn, *d_v2, *d_v1, *d_divergence, *d_struct, *d_structSmooth, *d_imgKernel_sigma, *d_imgS, *d_imgKernel_rho, *d_diffusionTensor, *d_le1, *d_le2;
 
 	cudaMalloc(&d_imgIn, n * sizeof(float) );CUDA_CHECK;
 	cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
@@ -291,6 +388,14 @@ int main(int argc, char **argv)
     cudaMemset(d_structSmooth, 0, n3 * sizeof(float) ); CUDA_CHECK;
     cudaMalloc(&d_diffusionTensor, n3 * sizeof(float) ); CUDA_CHECK;
     cudaMemset(d_diffusionTensor, 0,  n3 * sizeof(float) ); CUDA_CHECK;
+
+
+    cudaMalloc(&d_le1, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_le1, 0, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMalloc(&d_le2, n3 * sizeof(float) ); CUDA_CHECK;
+    cudaMemset(d_le2, 0,  n3 * sizeof(float) ); CUDA_CHECK;
+
+
     cudaMalloc(&d_imgKernel_sigma, (size_t) G_sigma.cols * G_sigma.rows * sizeof(float) ); CUDA_CHECK;
     cudaMemcpy(d_imgKernel_sigma, imgKernel_sigma, G_sigma.cols * G_sigma.rows * sizeof(float), cudaMemcpyHostToDevice);CUDA_CHECK;
     //d_imagesc("d_imgKernel_sigma",d_imgKernel_sigma,G_sigma.cols,G_sigma.rows,1,false,true);
@@ -319,7 +424,7 @@ int main(int argc, char **argv)
         //cv::waitKey(0);
         
         //a)
-        createStructureTensorLayered<<<grid, block>>>(d_v1,d_v2,d_struct, w, h, nc);
+        createStructureTensorLayered<<<grid, block>>>(d_v1,d_v2,d_struct, w, h, nc); //createStructureTensorLayered
         cudaDeviceSynchronize();CUDA_CHECK;
 
         //d_imagesc("d_struct",d_struct, w, h, nc, true);
@@ -334,16 +439,20 @@ int main(int argc, char **argv)
         cv::waitKey(0);
 
         //b and c)
-        diffusionTensorFromStructureTensor<<<grid, block>>>(d_structSmooth, d_diffusionTensor, w, h, C, alpha); 
+        diffusion_tensor /*diffusionTensorFromStructureTensor*/ <<<grid, block>>>(d_structSmooth, d_diffusionTensor, d_le1, d_le2, w, h, C, alpha); 
         cudaDeviceSynchronize();CUDA_CHECK;
+
+        //d_imagesc("d_le1",d_le1, w, h, nc, true);
+        //d_imagesc("d_le2",d_le2, w, h, nc, true);
 
         d_imagesc("d_diffusionTensor",d_diffusionTensor, w, h, nc, true);
         cv::waitKey(0);
 
 
-	/*for (; i < N && isRunning; ++i)
+	for (; i < N && isRunning; ++i)
     {
         timergpu.start();
+        imagescReset();
 
 
         //now use normal gradient, not rotational invariant one;
@@ -353,15 +462,15 @@ int main(int argc, char **argv)
         diffusivity<<<grid,block>>>(d_v1,d_v2,d_diffusionTensor,w,h,nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        d_imagesc("d_v1-diffusivity",d_v1, w, h, nc);
-        d_imagesc("d_v2-diffusivity",d_v1, w, h, nc);
-        cv::waitKey(0);
+        //d_imagesc("d_v1-diffusivity",d_v1, w, h, nc);
+        //d_imagesc("d_v2-diffusivity",d_v1, w, h, nc);
+        //cv::waitKey(0);
 
         divergence<<<grid,block>>>(d_v1,d_v2,d_divergence, w, h, nc);
         cudaDeviceSynchronize();CUDA_CHECK;
 
-        d_imagesc("d_divergence",d_divergence, w, h, nc);
-        cv::waitKey(0);
+        //d_imagesc("d_divergence",d_divergence, w, h, nc);
+        //cv::waitKey(0);
 
         update<<<grid,block>>>(tau,d_imgIn,d_divergence,w,h,nc);
         cudaDeviceSynchronize();CUDA_CHECK;
@@ -369,19 +478,19 @@ int main(int argc, char **argv)
         timergpu.end();
         tg[i] = timergpu.get();
 
-        d_imagesc("d_imgIn",d_imgIn, w, h, nc);
-
-        imagescReset();
 
         cout<<"iteration: "<<i<<endl;
-        char key=cv::waitKey(delay);
+        /*char key=cv::waitKey(delay);
         int keyN=key;
         //cout<<"-----------"<<key<<"    "<<keyN<<endl;
         if(keyN == 27 || key == 'q' || key == 'Q'){
             cout<<"leaving iteration loop at i: "<<i<<"   total iterations: "<<i<<endl;
             isRunning=false;
-        }
-    }*/
+        }*/
+    }
+
+    d_imagesc("d_imgIn",d_imgIn, w, h, nc);
+
 
     cudaFree(d_imgIn);CUDA_CHECK;
     cudaFree(d_imgS);CUDA_CHECK;

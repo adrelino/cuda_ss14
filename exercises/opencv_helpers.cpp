@@ -53,7 +53,19 @@ cv::Mat kernel(float sigma, int r){
 void imagesc(std::string title, cv::Mat mat, int x, int y){
     double min,max;
     cv::minMaxLoc(mat,&min,&max);
-    cv::Mat  kernel_prime = mat/max;
+
+    int nc=mat.channels();
+
+    cv::Mat mask = cv::Mat(mat != mat);
+
+    cout<<"imagesc: "<< title<<"    nc= "<<nc<<" #nans="<<cv::sum(mask)[0]<< " min="<<min<< " max="<<max<<endl;
+    //cout<<mat(cv::Rect(mat.cols/2-2,mat.rows/2-2,4,4))<<endl;
+
+    cv::Mat  kernel_prime = mat/max; //(mat-min)/(max-min);
+    cv::minMaxLoc(kernel_prime,&min,&max);
+    cout<<"imagesc: "<< title<<"    nc= "<<nc<<" #nans="<<cv::sum(mask)[0]<< " min="<<min<< " max="<<max<<endl;
+
+
     showImage(title, kernel_prime, x,y);
 }
 
