@@ -21,6 +21,8 @@
 #include "aux.h"
 #include <iostream>
 #include <math.h>
+#include <stdio.h>
+
 #include "common_kernels.cuh"
 // #include "opencv_helpers.h"
 
