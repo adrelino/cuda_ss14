@@ -24,7 +24,7 @@
 #include <stdio.h>
 
 #include "common_kernels.cuh"
-// #include "opencv_helpers.h"
+#include "opencv_helpers.h"
 
 using namespace std;
 
@@ -52,7 +52,7 @@ __global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
 
     extern __shared__ int s_hist[];
 
-    if(xb < 64 && yb < 4*nc) s_hist[xb+yb*64]=0;
+    if(xb < 32 && yb < 8*nc) s_hist[xb+yb*32]=0;
 
     __syncthreads();
 
@@ -61,7 +61,7 @@ __global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
         for (int c=0; c<nc; c++){
             int i=x+y*w+c*w*h;
             k=imgIn[i]*255.f;
-            int ki=lroundf(k)+256*c;
+            int ki=k+256*c;
             atomicAdd(&s_hist[ki], 1);
         }
     }
@@ -69,7 +69,7 @@ __global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
     __syncthreads();
 
 
-    if(xb < 64 && yb < 4*nc) atomicAdd(&hist[xb+yb*64],s_hist[xb+yb*64]);
+    if(xb < 32 && yb < 8*nc) atomicAdd(&hist[xb+yb*32],s_hist[xb+yb*32]);
 }
 
 // uncomment to use the camera
@@ -210,8 +210,8 @@ int main(int argc, char **argv)
         cudaMalloc(&d_hist2, 256 * nc * sizeof(int)); CUDA_CHECK;
         cudaMemset(d_hist2, 0, 256 * nc * sizeof(int)); CUDA_CHECK;
 
-        dim3 blockSize(64, 16, 1);
-        dim3 gridSize((max(w,64) + blockSize.x - 1) / blockSize.x, (max(h,nc*4) + blockSize.y - 1) / blockSize.y, 1);
+        dim3 blockSize(32, 32, 1);
+        dim3 gridSize((max(w,32) + blockSize.x - 1) / blockSize.x, (max(h,nc*8) + blockSize.y - 1) / blockSize.y, 1);
         size_t smBytes = 256 * nc * sizeof(int);
         
         timerglobal.start();
@@ -235,11 +235,11 @@ int main(int argc, char **argv)
     char windowTitle[256];
     
     for(int c=0; c<nc; c++){
-        cout << "channel nr. " << c << ":" << endl;
-        for(int i=256*c; i<256*(c+1); i++){
-            cout << hist[i] << ", ";
-        }
-        cout << endl;
+        // cout << "channel nr. " << c << ":" << endl;
+        // for(int i=256*c; i<256*(c+1); i++){
+        //     cout << hist[i] << ", ";
+        // }
+        // cout << endl;
         int *histc=new int[256];
         std::copy (hist+256*c, hist+256*(c+1), histc);
         sprintf(windowTitle, "Histogram channel %d", c);
