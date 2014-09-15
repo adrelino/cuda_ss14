@@ -21,7 +21,7 @@
 #include "aux.h"
 #include <iostream>
 #include <math.h>
-#include <stdlib.h>
+//#include <stdlib.h>
 //#include <stdio.h>
 
 #include "common_kernels.cuh"
@@ -29,7 +29,7 @@
 
 using namespace std;
 
-__global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
+__global__ void calcHistogramGlobal(float *imgIn, int* hist, int w, int h, int nc){
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int y = threadIdx.y + blockDim.y * blockIdx.y;
 
@@ -43,10 +43,34 @@ __global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
         int ki=lroundf(k)+256*c;
         atomicAdd(&hist[ki], 1);
     }
-    // k/=(float)nc;
-    
+}
 
-    
+__global__ void calcHistogram(float *imgIn, int* hist, int w, int h, int nc){
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int y = threadIdx.y + blockDim.y * blockIdx.y;
+    int xb = threadIdx.x;
+    int yb = threadIdx.y;
+
+    extern __shared__ int s_hist[];
+
+    if(xb < 64 && yb < 4*nc) s_hist[xb+yb*64]=0;
+
+    __syncthreads();
+
+    if (x < w && y < h) {
+        float k=0;
+        for (int c=0; c<nc; c++){
+            int i=x+y*w+c*w*h;
+            k=imgIn[i]*255.f;
+            int ki=lroundf(k)+256*c;
+            atomicAdd(&s_hist[ki], 1);
+        }
+    }
+
+    __syncthreads();
+
+
+    if(xb < 64 && yb < 4*nc) atomicAdd(&hist[xb+yb*64],s_hist[xb+yb*64]);
 }
 
 // uncomment to use the camera
@@ -172,30 +196,41 @@ int main(int argc, char **argv)
 
     // GPU COMPUTATION
     float *d_imgIn;
-    int *d_hist;
+    int *d_hist, *d_hist2;
+    float *tg, *ts;
+    ts=(float*)malloc(repeats*sizeof(float));
+    tg=(float*)malloc(repeats*sizeof(float));
     
     for (int i = 0; i < repeats; ++i) {
+        Timer timerglobal, timershared; 
+
         cudaMalloc(&d_imgIn, n * sizeof(float)); CUDA_CHECK;
         cudaMemcpy(d_imgIn, imgIn, n * sizeof(float), cudaMemcpyHostToDevice); CUDA_CHECK;
         cudaMalloc(&d_hist, 256 * nc * sizeof(int)); CUDA_CHECK;
         cudaMemset(d_hist, 0, 256 * nc * sizeof(int)); CUDA_CHECK;
-// cudaMalloc(&d_imgOut, n * sizeof(float)); CUDA_CHECK;
+        cudaMalloc(&d_hist2, 256 * nc * sizeof(int)); CUDA_CHECK;
+        cudaMemset(d_hist2, 0, 256 * nc * sizeof(int)); CUDA_CHECK;
 
-        dim3 blockSize(32, 4, 1);
-        dim3 gridSize((w + blockSize.x - 1) / blockSize.x, (h + blockSize.y - 1) / blockSize.y, 1);
+        dim3 blockSize(64, 16, 1);
+        dim3 gridSize((max(w,64) + blockSize.x - 1) / blockSize.x, (max(h,nc*4) + blockSize.y - 1) / blockSize.y, 1);
+        size_t smBytes = 256 * nc * sizeof(int);
+        
+        timerglobal.start();
+        calcHistogramGlobal<<<gridSize, blockSize>>>(d_imgIn, d_hist2, w, h, nc); CUDA_CHECK;
+        timerglobal.end();
+        tg[i] = timerglobal.get();
 
-        calcHistogram<<<gridSize, blockSize>>>(d_imgIn, d_hist, w, h, nc); CUDA_CHECK;
+        timershared.start();
+        calcHistogram<<<gridSize, blockSize, smBytes>>>(d_imgIn, d_hist, w, h, nc); CUDA_CHECK;
+        timershared.end(),
+        ts[i] = timershared.get();
+
         cudaDeviceSynchronize(); CUDA_CHECK;
-// // pause a little bit
-// char key = cv::waitKey(delay);
-// if (static_cast<int>(key) == 27)
-//   break;
 
         cudaMemcpy(hist, d_hist, 256 * nc * sizeof(int), cudaMemcpyDeviceToHost); CUDA_CHECK;
 
         cudaFree(d_imgIn); CUDA_CHECK;
         cudaFree(d_hist); CUDA_CHECK;
-// cudaFree(d_imgOut); CUDA_CHECK;
     }
 
     for(int c=0; c<nc; c++){
@@ -208,7 +243,8 @@ int main(int argc, char **argv)
         std::copy (hist+256*c, hist+256*(c+1), histc);
         showHistogram256("         histogram"+c, histc, 100+w, c*200);
     }
-
+    cout << "avg time global memory: " << GetAverage(tg, repeats)*1000 << " ms" << endl;
+    cout << "avg time shared memory: " << GetAverage(ts, repeats)*1000 << " ms" << endl;
 
     // show output image: first convert to interleaved opencv format from the layered raw array
     // convert_layered_to_mat(mOut, imgOut);

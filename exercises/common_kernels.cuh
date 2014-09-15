@@ -321,3 +321,12 @@ __host__ __device__ __forceinline__ void outer(float2 v, float4 *m) { //notice e
   m->z = v.y * v.x;
   m->w = v.y * v.y;
 }
+
+// return average value of a float array -> timing
+float GetAverage(float dArray[], int iSize) {
+    float dSum = dArray[0];
+    for (int i = 1; i < iSize; ++i) {
+        dSum += dArray[i];
+    }
+    return dSum/iSize;
+}
