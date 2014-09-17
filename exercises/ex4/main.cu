@@ -16,7 +16,7 @@
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 using namespace std;
 

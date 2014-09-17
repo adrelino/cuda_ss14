@@ -74,7 +74,7 @@ int main(int argc,char **argv)
     // ### Notes:
     // ### 1. Remember to free all GPU arrays after the computation
     // ### 2. Always use the macro CUDA_CHECK after each CUDA call, e.g. "cudaMalloc(...); CUDA_CHECK;"
-    // ###    For convenience this macro is defined directly in this file, later we will only include "aux.h"
+    // ###    For convenience this macro is defined directly in this file, later we will only include "helper.h"
     float *d_a;
     size_t size_of_array = n * sizeof(float);
     

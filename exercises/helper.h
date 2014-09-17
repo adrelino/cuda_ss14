@@ -30,8 +30,7 @@
 
 
 // parameter processing
-template<typename T>
-bool getParam(std::string param, T &var, int argc, char **argv)
+template<typename T> bool getParam(std::string param, T &var, int argc, char **argv)
 {
     const char *c_param = param.c_str();
     for(int i=argc-1; i>=1; i--)

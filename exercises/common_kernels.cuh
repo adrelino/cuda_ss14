@@ -234,7 +234,7 @@ __host__ __device__ __forceinline__ void unitScale(float2 *v) { //notice e1,2 ar
 
 
 //working eigenvalue computation with all special cases (received with thanks from another group)
-__host__ __device__ void cuda_eig(float a, float b, float c, float d, float *L1, float *L2, float *V1_1, float *V1_2, float *V2_1, float *V2_2)
+__host__ __device__ __forceinline__ void cuda_eig(float a, float b, float c, float d, float *L1, float *L2, float *V1_1, float *V1_2, float *V2_1, float *V2_2)
 {
     float T = a + d; 
     float D = a*d - b*c;

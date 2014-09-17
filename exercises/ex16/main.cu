@@ -18,7 +18,7 @@
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 #include <math.h>
 #include <stdio.h>

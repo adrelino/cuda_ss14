@@ -21,7 +21,7 @@
 // ### Markus Schlaffer, , p070
 
 
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 #include <math.h>
 //#include <stdio.h>

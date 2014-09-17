@@ -17,8 +17,13 @@
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 #include "opencv_helpers.h"
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
+
+#ifndef __USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#include <math.h>
+#endif
 
 using namespace std;
 
@@ -140,7 +145,7 @@ void d_imagesc(std::string name,float* d_imgIn, int w, int h, int nc, bool split
 
     convert_layered_to_mat(imgOpenCV, imgIn);
     if(splitChannels){
-        cv::Mat channel[nc];
+		std::vector<cv::Mat> channel(nc);
         cv::split(imgOpenCV,channel);
         for(int i=0; i<nc; i++){
             std::stringstream ss;

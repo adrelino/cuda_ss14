@@ -16,9 +16,15 @@
 // ###
 
 
-#include "aux.h"
+#include "helper.h"
 #include <cstdlib>
 #include <iostream>
+
+#ifndef __USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#include <math.h>
+#endif
+
 using std::stringstream;
 using std::cerr;
 using std::cout;
@@ -29,8 +35,7 @@ using std::string;
 
 
 // parameter processing: template specialization for T=bool
-template<>
-bool getParam<bool>(std::string param, bool &var, int argc, char **argv)
+template<> inline bool getParam<bool>(std::string param, bool &var, int argc, char **argv)
 {
     const char *c_param = param.c_str();
     for(int i=argc-1; i>=1; i--)

@@ -17,7 +17,7 @@
 
 
 //invoce like: ./ex11/main -i ../images/flowers.png -functionType 2 -delay 1
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 #include <math.h>
 //#include <stdio.h>

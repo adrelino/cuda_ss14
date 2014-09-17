@@ -37,7 +37,7 @@ avg time cublas: 0.29 ms
 
 */
 
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 #include <math.h>
 #include "cublas_v2.h"

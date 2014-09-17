@@ -17,7 +17,7 @@
 
 
 //invoce like: ./ex11/main -i ../images/flowers.png -C 2 -delay 1
-#include "aux.h"
+#include "helper.h"
 #include <iostream>
 #include <math.h>
 #include "common_kernels.cuh"
