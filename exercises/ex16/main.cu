@@ -18,13 +18,13 @@
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
 
 
-#include "helper.h"
+#include <helper.h>
 #include <iostream>
 #include <math.h>
 #include <stdio.h>
 
-#include "common_kernels.cuh"
-#include "opencv_helpers.h"
+#include <common_kernels.cuh>
+#include <opencv_helpers.h>
 
 using namespace std;
 

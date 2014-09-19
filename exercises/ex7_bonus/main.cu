@@ -18,7 +18,7 @@
 #include <iostream>
 using namespace std;
 
-#include "helper.h"
+#include <helper.h>
 #include "cublas_v2.h"
 
 string get_cublas_error(cublasStatus_t stat) {

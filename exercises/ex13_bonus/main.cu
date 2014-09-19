@@ -17,11 +17,11 @@
 
 
 //invoce like: ./ex11/main -i ../images/flowers.png -C 2 -delay 1
-#include "helper.h"
+#include <helper.h>
 #include <iostream>
 #include <math.h>
-#include "common_kernels.cuh"
-#include "opencv_helpers.h"
+#include <common_kernels.cuh>
+#include <opencv_helpers.h>
 #include <stdio.h>
 //#include <stdio.h>
 using namespace std;

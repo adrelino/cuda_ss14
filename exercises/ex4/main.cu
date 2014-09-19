@@ -14,10 +14,10 @@
 // ### Dennis Mack, dennis.mack@tum.de, p060
 // ### Adrian Haarbach, haarbach@in.tum.de, p077
 // ### Markus Schlaffer, markus.schlaffer@in.tum.de, p070
-
-
-#include "helper.h"
 #include <iostream>
+
+#include <helper.h>
+
 using namespace std;
 
 // uncomment to use the camera
